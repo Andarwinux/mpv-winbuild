@@ -10,7 +10,6 @@ on:
         default: "all-64bit"
         type: choice
         options:
-        - 32bit
         - 64bit
         - 64bit-v3
         - aarch64
@@ -26,7 +25,6 @@ on:
         default: "clang"
         type: choice
         options:
-        - gcc
         - clang
       needclean:
         description: 'Build without cache'
@@ -41,7 +39,7 @@ on:
       release:
         description: "Publish a release"
         required: false
-        default: false
+        default: true
         type: boolean
       command:
         description: 'input command you want to run before build'
@@ -88,13 +86,13 @@ jobs:
                 matrix.bit = ["aarch64"];
                 break;
               case "all-64bit":
-                matrix.bit = ["64","64-v3","aarch64"];
+                matrix.bit = ["64-v3","aarch64"];
                 break;
               case "all":
-                matrix.bit = ["32","64","64-v3","aarch64"];
+                matrix.bit = ["64-v3","aarch64"];
                 break;
               default:
-                matrix.bit = ["64","64-v3","aarch64"];
+                matrix.bit = ["64-v3","aarch64"];
                 break;
             }
             matrix.lgpl=[false];
@@ -166,7 +164,7 @@ jobs:
     needs: params
     runs-on: ubuntu-latest
     container:
-      image: archlinux/archlinux:base-devel
+      image: cachyos/cachyos-v3:latest
     continue-on-error: true
     strategy:
       matrix: ${{ fromJson(needs.params.outputs.matrix) }}
@@ -174,9 +172,8 @@ jobs:
     steps:
       - name: Install Dependencies
         run: |
-          sudo echo -e "[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
-          sudo pacman -Syu --noconfirm
-          sudo pacman -S --noconfirm --needed git ninja cmake meson clang lld libc++ unzip ragel yasm nasm gperf rst2pdf lib32-gcc-libs lib32-glib2 python-cairo curl wget mimalloc ccache
+          sudo bash -c 'yes y|pacman -Syu'
+          sudo bash -c 'yes y|pacman -Sy --needed base-devel zlib-ng-compat git ninja cmake meson clang lld libc++ unzip ragel yasm nasm gperf rst2pdf python-cairo curl wget mimalloc go ccache wine'
           mkdir -p /home/opt/7zip
           wget -qO - https://www.7-zip.org/a/7z2408-linux-x64.tar.xz | tar -xJf - -C /home/opt/7zip 7zzs
           sudo ln -s /home/opt/7zip/7zzs /usr/bin/7z
@@ -185,11 +182,14 @@ jobs:
           git config --global pull.rebase true
           git config --global rebase.autoStash true
           git config --global fetch.prune true
+          sudo GOBIN=/usr/bin go install go.chromium.org/luci/cipd/client/cmd/...@latest
+          sudo cipd install fuchsia/third_party/clang/linux-amd64 latest -root /usr/local/fuchsia-clang
+          echo "PATH=/usr/local/fuchsia-clang/bin:$PATH" >> $GITHUB_ENV
       - uses: actions/checkout@v4
       - name: Checkout toolchain
         uses: actions/checkout@v4
         with:
-          repository: shinchiro/mpv-winbuild-cmake
+          repository: Andarwinux/mpv-winbuild-cmake
           path: mpv-winbuild-cmake
           fetch-depth: 0
       - name: Prepare
@@ -317,7 +317,7 @@ jobs:
           override_cache_key: ccache-build${{ matrix.bit }}-${{ inputs.compiler }}
           ccache_options: |
             cache_dir=$GITHUB_WORKSPACE/.ccache
-            max_size=500M
+            max_size=2G
             sloppiness=locale,time_macros
             compiler_check=none
 
@@ -446,14 +446,119 @@ jobs:
                 core.exportVariable( `${type}_path`, file );
               }
             }
-            
-            let { stdout: ffmpeg_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/ffmpeg rev-parse --short HEAD");
-            ffmpeg_hash = ffmpeg_hash.trim();
+
+            let mimalloc_r_path = "";
+            let mimalloc_o_path = "";
+            if ( arch != "aarch64" ){
+              const globber_mimalloc_r = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/mimalloc-redirect.dll`);
+              mimalloc_r_path = (await globber_mimalloc_r.glob())[0];
+              const globber_mimalloc_o = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/mimalloc-override.dll`);
+              mimalloc_o_path = (await globber_mimalloc_o.glob())[0];
+            }
+
+            let { stdout } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/ffmpeg rev-parse --short HEAD");
+            let ffmpeg_hash = stdout.trim();
             const ffmpeg_name = `ffmpeg${lgpl}-${arch}-git-${ffmpeg_hash}`;
-            core.exportVariable( 'ffmpeg_name', ffmpeg_name );
-            const globber = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/ffmpeg.exe`);
-            const ffmpeg_path = (await globber.glob())[0]
-            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${ffmpeg_name}.7z ${ffmpeg_path}`)
+            core.exportVariable('ffmpeg_name', ffmpeg_name);
+            const globber_ffmpeg = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/ffmpeg.exe`);
+            const ffmpeg_path = (await globber_ffmpeg.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${ffmpeg_name}.7z ${ffmpeg_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: x265_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/x265 rev-parse --short HEAD");
+            x265_hash = x265_hash.trim();
+            const x265_name = `x265-${arch}-git-${x265_hash}`;
+            core.exportVariable('x265_name', x265_name);
+            const globber_x265 = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/x265.exe`);
+            const x265_path = (await globber_x265.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${x265_name}.7z ${x265_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: libmediainfo_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/libmediainfo rev-parse --short HEAD");
+            libmediainfo_hash = libmediainfo_hash.trim();
+            const libmediainfo_name = `libmediainfo-${arch}-git-${libmediainfo_hash}`;
+            core.exportVariable('libmediainfo_name', libmediainfo_name);
+            const globber_libmediainfo = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/libmediainfo.dll`);
+            const libmediainfo_path = (await globber_libmediainfo.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${libmediainfo_name}.7z ${libmediainfo_path}`);
+
+            let { stdout: mediainfo_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/mediainfo rev-parse --short HEAD");
+            mediainfo_hash = mediainfo_hash.trim();
+            const mediainfo_name = `mediainfo-${arch}-git-${mediainfo_hash}`;
+            core.exportVariable('mediainfo_name', mediainfo_name);
+            const globber_mediainfo = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/mediainfo.exe`);
+            const mediainfo_path = (await globber_mediainfo.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${mediainfo_name}.7z ${mediainfo_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: mpv_debug_plugin_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/mpv-debug-plugin rev-parse --short HEAD");
+            mpv_debug_plugin_hash = mpv_debug_plugin_hash.trim();
+            const mpv_debug_plugin_name = `mpv-debug-plugin-${arch}-git-${mpv_debug_plugin_hash}`;
+            core.exportVariable('mpv-debug-plugin_name', mpv_debug_plugin_name);
+            const globber_mpv_debug_plugin = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/debug.dll`);
+            const mpv_debug_plugin_path = (await globber_mpv_debug_plugin.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${mpv_debug_plugin_name}.7z ${mpv_debug_plugin_path}`);
+
+            let { stdout: mpv_menu_plugin_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/mpv-menu-plugin rev-parse --short HEAD");
+            mpv_menu_plugin_hash = mpv_menu_plugin_hash.trim();
+            const mpv_menu_plugin_name = `mpv-menu-plugin-${arch}-git-${mpv_menu_plugin_hash}`;
+            core.exportVariable('mpv-menu-plugin_name', mpv_menu_plugin_name);
+            const globber_mpv_menu_plugin = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/menu.dll`);
+            const mpv_menu_plugin_path = (await globber_mpv_menu_plugin.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${mpv_menu_plugin_name}.7z ${mpv_menu_plugin_path}`);
+
+            let { stdout: curl_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/curl rev-parse --short HEAD");
+            curl_hash = curl_hash.trim();
+            const curl_name = `curl-${arch}-git-${curl_hash}`;
+            core.exportVariable('curl_name', curl_name);
+            const globber_curl = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/curl.exe`);
+            const curl_path = (await globber_curl.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${curl_name}.7z ${curl_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: aria2_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/aria2 rev-parse --short HEAD");
+            aria2_hash = aria2_hash.trim();
+            const aria2_name = `aria2-${arch}-git-${aria2_hash}`;
+            core.exportVariable('aria2_name', aria2_name);
+            const globber_aria2 = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/aria2c.exe`);
+            const aria2_path = (await globber_aria2.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${aria2_name}.7z ${aria2_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: qbittorrent_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/qbittorrent rev-parse --short HEAD");
+            qbittorrent_hash = qbittorrent_hash.trim();
+            const qbittorrent_name = `qbittorrent-${arch}-git-${qbittorrent_hash}`;
+            core.exportVariable('qbittorrent_name', qbittorrent_name);
+            const globber_qbittorrent = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/qbittorrent.exe`);
+            const qbittorrent_path = (await globber_qbittorrent.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${qbittorrent_name}.7z ${qbittorrent_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: openssl_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/openssl rev-parse --short HEAD");
+            openssl_hash = openssl_hash.trim();
+            const openssl_name = `openssl-${arch}-git-${openssl_hash}`;
+            core.exportVariable('openssl_name', openssl_name);
+            const globber_openssl = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/openssl.exe`);
+            const openssl_path = (await globber_openssl.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${openssl_name}.7z ${openssl_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: zstd_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/zstd rev-parse --short HEAD");
+            zstd_hash = zstd_hash.trim();
+            const zstd_name = `zstd-${arch}-git-${zstd_hash}`;
+            core.exportVariable('zstd_name', zstd_name);
+            const globber_zstd = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/zstd.exe`);
+            const zstd_path = (await globber_zstd.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${zstd_name}.7z ${zstd_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: svtav1_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/svtav1 rev-parse --short HEAD");
+            svtav1_hash = svtav1_hash.trim();
+            const svtav1_name = `svtav1-${arch}-git-${svtav1_hash}`;
+            core.exportVariable('svtav1_name', svtav1_name);
+            const globber_svtav1 = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/SvtAv1EncApp.exe`);
+            const svtav1_path = (await globber_svtav1.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${svtav1_name}.7z ${svtav1_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: telegram_bot_api_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/telegram-bot-api rev-parse --short HEAD");
+            telegram_bot_api_hash = telegram_bot_api_hash.trim();
+            const telegram_bot_api_name = `telegram-bot-api-${arch}-git-${telegram_bot_api_hash}`;
+            core.exportVariable('telegram_bot_api_name', telegram_bot_api_name);
+            const globber_telegram_bot_api = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/telegram-bot-api.exe`);
+            const telegram_bot_api_path = (await globber_telegram_bot_api.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${telegram_bot_api_name}.7z ${telegram_bot_api_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
 
       - name: upload mpv-debug
         uses: actions/upload-artifact@v4
@@ -480,6 +585,90 @@ jobs:
         with:
           name: ${{ env.ffmpeg_name }}
           path: mpv-winbuild-cmake/release/${{ env.ffmpeg_name }}.7z
+
+      - name: upload x265
+        uses: actions/upload-artifact@v4
+        if: ${{ env.x265_name }}
+        with:
+          name: ${{ env.x265_name }}
+          path: mpv-winbuild-cmake/release/${{ env.x265_name }}.7z
+
+      - name: upload libmediainfo
+        uses: actions/upload-artifact@v4
+        if: ${{ env.libmediainfo_name }}
+        with:
+          name: ${{ env.libmediainfo_name }}
+          path: mpv-winbuild-cmake/release/${{ env.libmediainfo_name }}.7z
+
+      - name: upload mediainfo
+        uses: actions/upload-artifact@v4
+        if: ${{ env.mediainfo_name }}
+        with:
+          name: ${{ env.mediainfo_name }}
+          path: mpv-winbuild-cmake/release/${{ env.mediainfo_name }}.7z
+
+      - name: upload curl
+        uses: actions/upload-artifact@v4
+        if: ${{ env.curl_name }}
+        with:
+          name: ${{ env.curl_name }}
+          path: mpv-winbuild-cmake/release/${{ env.curl_name }}.7z
+
+      - name: upload aria2
+        uses: actions/upload-artifact@v4
+        if: ${{ env.aria2_name }}
+        with:
+          name: ${{ env.aria2_name }}
+          path: mpv-winbuild-cmake/release/${{ env.aria2_name }}.7z
+
+      - name: upload qbittorrent
+        uses: actions/upload-artifact@v4
+        if: ${{ env.qbittorrent_name }}
+        with:
+          name: ${{ env.qbittorrent_name }}
+          path: mpv-winbuild-cmake/release/${{ env.qbittorrent_name }}.7z
+
+      - name: upload openssl
+        uses: actions/upload-artifact@v4
+        if: ${{ env.openssl_name }}
+        with:
+          name: ${{ env.openssl_name }}
+          path: mpv-winbuild-cmake/release/${{ env.openssl_name }}.7z
+
+      - name: upload zstd
+        uses: actions/upload-artifact@v4
+        if: ${{ env.zstd_name }}
+        with:
+          name: ${{ env.zstd_name }}
+          path: mpv-winbuild-cmake/release/${{ env.zstd_name }}.7z
+
+      - name: upload svtav1
+        uses: actions/upload-artifact@v4
+        if: ${{ env.svtav1_name }}
+        with:
+          name: ${{ env.svtav1_name }}
+          path: mpv-winbuild-cmake/release/${{ env.svtav1_name }}.7z
+
+      - name: upload telegram-bot-api
+        uses: actions/upload-artifact@v4
+        if: ${{ env.telegram_bot_api_name }}
+        with:
+          name: ${{ env.telegram_bot_api_name }}
+          path: mpv-winbuild-cmake/release/${{ env.telegram_bot_api_name }}.7z
+
+      - name: upload mpv-debug-plugin
+        uses: actions/upload-artifact@v4
+        if: ${{ env.mpv-debug-plugin_name }}
+        with:
+          name: ${{ env.mpv-debug-plugin_name }}
+          path: mpv-winbuild-cmake/release/${{ env.mpv-debug-plugin_name }}.7z
+
+      - name: upload mpv-menu-plugin
+        uses: actions/upload-artifact@v4
+        if: ${{ env.mpv-menu-plugin_name }}
+        with:
+          name: ${{ env.mpv-menu-plugin_name }}
+          path: mpv-winbuild-cmake/release/${{ env.mpv-menu-plugin_name }}.7z
 
       - name: Save clang sysroot cache
         if: ${{ inputs.compiler =='clang' && inputs.no_save_cache != true && matrix.lgpl != true }}
@@ -615,7 +804,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: '{mpv,ffmpeg}*'
+          pattern: '{mpv,ffmpeg,x265,libmediainfo,mediainfo,curl,aria2,qbittorrent,zstd,openssl,svtav1,telegram-bot-api}*'
           merge-multiple: true
     
       - name: "Check artifacts"
@@ -675,7 +864,7 @@ jobs:
             const { basename } = require('path');
             const { createHash } = require('crypto');
             const { readFileSync,writeFileSync } = require('fs');
-            const globber = await glob.create([`artifacts/mpv*.7z`,`artifacts/ffmpeg*.7z`].join('\n'));
+            const globber = await glob.create([`artifacts/mpv*.7z`,`artifacts/ffmpeg*.7z`,`artifacts/x265*.7z`,`artifacts/libmediainfo*.7z`,`artifacts/mediainfo*.7z`,`artifacts/curl*.7z`,`artifacts/aria2*.7z`,`artifacts/qbittorrent*.7z`,`artifacts/openssl*.7z`,`artifacts/zstd*.7z`,`artifacts/svtav1*.7z`,`artifacts/telegram-bot-api*.7z`].join('\n'));
             const files = await globber.glob();
             if ( files.length > 0 ) {
               let sha256="";
@@ -690,7 +879,7 @@ jobs:
       - name: Create release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "artifacts/mpv*.7z,artifacts/ffmpeg*.7z,sha256.txt"
+          artifacts: "artifacts/mpv*.7z,artifacts/ffmpeg*.7z,artifacts/x265*.7z,artifacts/libmediainfo*.7z,artifacts/mediainfo*.7z,artifacts/curl*.7z,artifacts/aria2*.7z,artifacts/qbittorrent*.7z,artifacts/openssl*.7z,artifacts/zstd*.7z,artifacts/svtav1*.7z,artifacts/telegram-bot-api*.7z,sha256.txt"
           commit: version
           name: "${{ env.long_time }}"
           body: "${{ steps.note.outputs.note }}"

@@ -12,7 +12,6 @@ on:
         default: "all-64bit"
         type: choice
         options:
-        - 32bit
         - 64bit
         - 64bit-v3
         - aarch64
@@ -23,7 +22,6 @@ on:
         default: "clang"
         type: choice
         options:
-        - gcc
         - clang
       no_save_cache:
         description: "Don't save caches after success build"
@@ -38,7 +36,7 @@ on:
       release:
         description: "Publish a release"
         required: false
-        default: false
+        default: true
         type: boolean
       run_name:
         description: 'The name displayed in the list of workflow runs'
@@ -71,13 +69,13 @@ jobs:
                 matrix.bit = ["aarch64"];
                 break;
               case "all-64bit":
-                matrix.bit = ["64","64-v3","aarch64"];
+                matrix.bit = ["64-v3","aarch64"];
                 break;
               case "all":
-                matrix.bit = ["32","64","64-v3","aarch64"];
+                matrix.bit = ["64-v3","aarch64"];
                 break;
               default:
-                matrix.bit = ["64","64-v3","aarch64"];
+                matrix.bit = ["64-v3","aarch64"];
                 break;
             }
             core.setOutput("matrix",JSON.stringify(matrix));
@@ -92,7 +90,7 @@ jobs:
     needs: [params]
     runs-on: ubuntu-latest
     container:
-      image: archlinux/archlinux:base-devel
+      image: cachyos/cachyos-v3:latest
     continue-on-error: true
     strategy:
       matrix: ${{ fromJson(needs.params.outputs.matrix) }}
@@ -100,9 +98,8 @@ jobs:
     steps:
       - name: Install Dependencies
         run: |
-          sudo echo -e "[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
-          sudo pacman -Syu --noconfirm
-          sudo pacman -S --noconfirm --needed git ninja cmake meson wget mimalloc
+          sudo bash -c 'yes y|pacman -Syu'
+          sudo bash -c 'yes y|pacman -Sy --needed base-devel zlib-ng-compat git ninja cmake meson wget mimalloc go clang'
           mkdir -p /home/opt/7zip
           wget -qO - https://www.7-zip.org/a/7z2301-linux-x64.tar.xz | tar -xJf - -C /home/opt/7zip 7zzs
           sudo ln -s /home/opt/7zip/7zzs /usr/bin/7z
@@ -111,12 +108,15 @@ jobs:
           git config --global pull.rebase true
           git config --global rebase.autoStash true
           git config --global fetch.prune true
+          sudo GOBIN=/usr/bin go install go.chromium.org/luci/cipd/client/cmd/...@latest
+          sudo cipd install fuchsia/third_party/clang/linux-amd64 latest -root /usr/local/fuchsia-clang
+          echo "PATH=/usr/local/fuchsia-clang/bin:$PATH" >> $GITHUB_ENV
       - uses: actions/checkout@v4
 
       - name: Checkout toolchain
         uses: actions/checkout@v4
         with:
-          repository: shinchiro/mpv-winbuild-cmake
+          repository: Andarwinux/mpv-winbuild-cmake
           path: mpv-winbuild-cmake
           fetch-depth: 0
 
@@ -145,7 +145,8 @@ jobs:
         with:
           bit: "${{ matrix.bit }}"
           compiler: "clang"
-          command: "ninja -C $buildroot/build$bit rebuild_cache && cmake --build $buildroot/build$bit --target llvm-download && ninja -C $buildroot/build$bit llvm-clang"
+          command: "ninja -C $buildroot/build$bit rebuild_cache && ninja -C $buildroot/build$bit ninja && cmake --build $buildroot/build$bit --target llvm-download && ninja -C $buildroot/build$bit llvm-clang && ninja -C $buildroot/build$bit llvm-compiler-rt && ninja -C $buildroot/build$bit llvm-bolt && ninja -C $buildroot/build$bit ccache"
+          extra_option: "-DLLVM_ENABLE_LTO=Thin"
 
       - name: Save Toolchain Cache
         if: ${{ inputs.no_save_cache != true }}
@@ -165,26 +166,40 @@ jobs:
         if: ${{ always() }}
         run: |
           sudo 7z a logs.7z $(find mpv-winbuild-cmake -type f -iname "*-*.log" -or -wholename "*/ffbuild/config.log")
+      - name: Packaging clang_root
+        if: ${{ always() }}
+        run: |
+          tar -Jcf ./clang_root_${{ matrix.bit }}.tar.xz --format=ustar --numeric-owner --owner=0 --group=0 --sort=name mpv-winbuild-cmake/clang_root
       - name: upload logs
         uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
           name: ${{ matrix.bit }}_logs
           path: logs.7z
+      - name: "release clang_root"
+        uses: ncipollo/release-action@v1
+        with:
+          prerelease: false
+          artifacts: clang_root_${{ matrix.bit }}.tar.xz
+          replacesArtifacts: true
+          tag: clang_root
+          name: clang_root
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   rust:
     name: Install Rust Toolchain
     needs: [params]
     runs-on: ubuntu-latest
     container:
-      image: archlinux/archlinux:base-devel
+      image: cachyos/cachyos-v3:latest
     continue-on-error: true
 
     steps:
       - name: Install Dependencies
         run: |
           sudo pacman -Syu --noconfirm
-          sudo pacman -S --noconfirm --needed git ninja cmake meson wget
+          sudo pacman -S --noconfirm --needed base-devel git ninja cmake meson wget mimalloc clang
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --global pull.rebase true
@@ -195,7 +210,7 @@ jobs:
       - name: Checkout toolchain
         uses: actions/checkout@v4
         with:
-          repository: shinchiro/mpv-winbuild-cmake
+          repository: Andarwinux/mpv-winbuild-cmake
           path: mpv-winbuild-cmake
           fetch-depth: 0
 
