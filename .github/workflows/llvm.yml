@@ -7,7 +7,7 @@ on:
       pgo:
         description: "Build llvm with PGO"
         required: false
-        default: false
+        default: true
         type: boolean   
       no_save_cache:
         description: "Don't save caches after success build"
@@ -17,7 +17,7 @@ on:
       trigger_toolchain:
         description: "Trigger toolchain build action after success build"
         required: false
-        default: true
+        default: false
         type: boolean
       build_target:
         description: "Toolchain build target"
@@ -25,7 +25,6 @@ on:
         default: "all-64bit"
         type: choice
         options:
-        - 32bit
         - 64bit
         - 64bit-v3
         - aarch64
@@ -34,7 +33,7 @@ on:
       trigger_build:
         description: "Trigger mpv build action after toolchain build"
         required: false
-        default: true
+        default: false
         type: boolean
       release:
         description: "Publish a release after mpv build"
@@ -50,7 +49,7 @@ jobs:
     name: Build LLVM
     runs-on: ubuntu-latest
     container:
-      image: archlinux/archlinux:base-devel
+      image: cachyos/cachyos-v3:latest
     steps:
       - name: suffix
         id: suffix
@@ -59,8 +58,8 @@ jobs:
           echo "cache_suffix=$cache_suffix" >> "$GITHUB_OUTPUT"
       - name: Install Dependencies
         run: |
-          sudo pacman -Syu --noconfirm
-          sudo pacman -S --noconfirm --needed git ninja cmake meson wget mimalloc go
+          sudo bash -c 'yes y|pacman -Syu'
+          sudo bash -c 'yes y|pacman -Sy --needed base-devel zlib-ng-compat git ninja cmake meson wget mimalloc go ccache'
           mkdir -p /home/opt/7zip
           wget -qO - https://www.7-zip.org/a/7z2301-linux-x64.tar.xz | tar -xJf - -C /home/opt/7zip 7zzs
           sudo ln -s /home/opt/7zip/7zzs /usr/bin/7z
@@ -76,7 +75,7 @@ jobs:
       - name: Checkout toolchain
         uses: actions/checkout@v4
         with:
-          repository: shinchiro/mpv-winbuild-cmake
+          repository: Andarwinux/mpv-winbuild-cmake
           path: mpv-winbuild-cmake
           fetch-depth: 0
 
@@ -86,7 +85,7 @@ jobs:
           bit: "64-v3"
           compiler: "clang"
           command: "ninja -C $buildroot/build$bit llvm"
-          extra_option: "${{ inputs.pgo && '-DLLVM_ENABLE_PGO=GEN -DLLVM_PROFILE_DATA_DIR=$PWD/profiles/'}}"
+          extra_option: "${{ inputs.pgo && '-DLLVM_ENABLE_PGO=GEN -DLLVM_ENABLE_LTO=OFF -DLLVM_PROFILE_DATA_DIR=$PWD/profiles/'}}"
 
       - name: Training LLVM
         uses: ./action/build_toolchain
@@ -94,8 +93,8 @@ jobs:
         with:
           bit: "64-v3"
           compiler: "clang"
-          command: "ninja -C $buildroot/build$bit rebuild_cache && cmake --build $buildroot/build$bit --target llvm-download && ninja -C $buildroot/build$bit llvm-clang"
-          extra_option: "-DLLVM_ENABLE_PGO=GEN -DLLVM_PROFILE_DATA_DIR=$buildroot/profiles/"
+          command: "ninja -C $buildroot/build$bit rebuild_cache && cmake --build $buildroot/build$bit --target llvm-download && ninja -C $buildroot/build$bit llvm-clang && ninja -C $buildroot/build$bit shaderc"
+          extra_option: "-DLLVM_ENABLE_PGO=GEN -DLLVM_ENABLE_LTO=Thin -DCLANG_PACKAGES_LTO=ON -DENABLE_CCACHE=ON -DLLVM_PROFILE_DATA_DIR=$buildroot/profiles/"
 
       - name: Merging profdata
         if: ${{ inputs.pgo }}
@@ -112,8 +111,16 @@ jobs:
         with:
           bit: "64-v3"
           compiler: "clang"
-          command: "ninja -C $buildroot/build$bit llvm && rm -rf clang_root/llvm-thinlto || true"
+          command: "ninja -C $buildroot/build$bit llvm && rm -rf clang_root/llvm-thinlto || true && llvm-strip -s clang_root/bin/llvm-{strings,cvtres} || true"
           extra_option: "-DLLVM_ENABLE_PGO=USE -DLLVM_ENABLE_LTO=Thin -DLLVM_PROFDATA_FILE=$buildroot/llvm.profdata"
+
+      - name: Test
+        run: |
+          file mpv-winbuild-cmake/clang_root/bin/llvm
+          ldd mpv-winbuild-cmake/clang_root/bin/llvm
+          ls -alh mpv-winbuild-cmake/clang_root/bin/llvm
+          llvm-readobj --headers mpv-winbuild-cmake/clang_root/bin/llvm
+          ./mpv-winbuild-cmake/clang_root/bin/llvm clang -v
 
       - name: Save llvm cache
         uses: actions/cache/save@v4.1.1
@@ -133,6 +140,16 @@ jobs:
         with:
           name: llvm_logs
           path: logs.7z
+      - name: "release llvm"
+        uses: ncipollo/release-action@v1
+        with:
+          prerelease: false
+          artifacts: mpv-winbuild-cmake/clang_root/bin/llvm
+          replacesArtifacts: true
+          tag: llvm
+          name: llvm
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
 
   trigger:

@@ -1,4 +1,4 @@
-# mpv-winbuild
+# mpv-winbuild-arm64
 
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/zhongfly/mpv-winbuild/mpv.yml?branch=main)](https://github.com/zhongfly/mpv-winbuild/actions)
 [![releases](https://img.shields.io/github/v/release/zhongfly/mpv-winbuild)](https://github.com/zhongfly/mpv-winbuild/releases/latest)
@@ -12,7 +12,7 @@ Based on <https://github.com/shinchiro/mpv-winbuild-cmake>.
 
 Checks the mpv repository every hour for updates. If there is an update and it is relevant to the windows build, it will automatically run the compilation and **release it on success**.
 
-This repo only provides 64-bit version. If you need a 32-bit version, you can fork this repo and run `MPV` workflow by yourself.
+This repo only provides x86-64-v3 and aarch64 version. If you need a 32-bit version, you can fork this repo and run `MPV` workflow by yourself.
 
 > [!NOTE]
 > `mpv-dev-xxxx.7z` is libmpv, including the `libmpv-2.dll` file.
