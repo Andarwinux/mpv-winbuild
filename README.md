@@ -4,104 +4,141 @@
 [![releases](https://img.shields.io/github/v/release/zhongfly/mpv-winbuild)](https://github.com/zhongfly/mpv-winbuild/releases/latest)
 [![downloads](https://img.shields.io/github/downloads/zhongfly/mpv-winbuild/total)](https://github.com/zhongfly/mpv-winbuild/releases)
 
-Use Github Action to build mpv for Windows with latest commit.
+Use Github Action to build apps for Windows with latest commit.
 
-Based on <https://github.com/shinchiro/mpv-winbuild-cmake>.
+- mpv
+  - PGOed for some use cases
+  - with libsixel (PGOed)
+  - with win32-subsystem=console (24H2 consoleAllocationPolicy) to get rid of mpv.com wrapper to improve vo=sixel user experience
+  - with more complete debuginfo for all deps for profiling and debugging
+  - with rubberband
+    - use [SLEEF](https://github.com/shibatch/sleef) DFT as FFT library
+    - up to 200% faster performance
+- mpv-menu-plugin
+- mpv-debug-plugin
+- ffmpeg
+  - PGOed for some codecs
+  - with frei0r
+  - patches from [dyphire/mpv-winbuild](https://github.com/dyphire/mpv-winbuild) has been merged to improve user experience
+  - patched to use winstore as fallback cert store by default, so TLS verify works out of the box
+    - see my [fork](https://github.com/Andarwinux/FFmpeg)
+  - patched to enable cuda on aarch64, but availability is not verified
+    - NVIDIA may have some Windows Arm products soon
+  - all external video codecs libraries have been configured to use win32threads instead of winpthreads
+    - see [toolchain.cmake.in](https://github.com/Andarwinux/mpv-winbuild-cmake/blob/master/toolchain.cmake.in#L13-L18)
+    - disabled all inline and external mmx/sse shit asm
+    - added runtime dispatch staticization of external AVX asm to allow compiler to do DCE
+- mujs
+  - PGOed
+- curl
+  - PGOed
+  - patched to use native ca by default
+  - with ngtcp2+nghttp3+openssl http3 support
+  - with unity build enabled
+- aria2
+  - PGOed
+  - patched to unlock concurrent connection limit
+- qBittorrent-Enhanced-Edition
+  - PGOed for UI(qtbase) and Network(libtorrent, openssl, boost)
+  - with freetype, vulkan
+  - patched to enable dpiAwareness by default
+  - with QT_FEATURE_winsdkicu enabled, need Windows 10 1903 or higher
+- svtav1-psy
+  - PGOed
+- mediainfo
 
-## Auto-Builds
 
-Checks the mpv repository every hour for updates. If there is an update and it is relevant to the windows build, it will automatically run the compilation and **release it on success**.
-
-This repo only provides 64-bit version. If you need a 32-bit version, you can fork this repo and run `MPV` workflow by yourself.
 
 > [!NOTE]
-> `mpv-dev-xxxx.7z` is libmpv, including the `libmpv-2.dll` file.
 >
-> Some media players based on libmpv use `libmpv-2.dll` or `mpv-2.dll`.You can upgrade their libmpv by overwriting this dll.
+> My build has more stuff than zhongfly's, but also removed some stuff that seems to be dead, if you find any use cases that make sense for you, or find some funky new features missing, please let me know. (But I always try to avoid any rust stuff if possible)
 >
-> `mpv-dev-lgpl-xxxx.7z` is libmpv under LGPLv2.1+ license, which disables LGPLv2.1+ incompatible packages and statically links to ffmpeg under LGPLv3.
-> 
-> I'm not a lawyer and can't guarantee that I've disabled all LGPL-incompatible packages, use at your own risk.
+> If you experience lag when using Vulkan, copy the vulkan-1.dll in the package next to mpv.exe and ffmpeg.exe. This may be caused by AVX/SSE transition penalties.
+>
+> My build removed pthread/winpthreads completely, so it's smaller, faster, and even more reliable, since winpthreads seems to have [handle leaks](https://libera.catirclogs.org/ffmpeg-devel/2025-09-17).
+>
+> I removed all shit inline/MMX/SSE(1) asm from ffmpeg because that overrides clang’s faster auto-vectorized code, which limits performance.
+>
+> I also added runtime dispatch staticalization to AVX asm to eliminate extra branches in the runtime dispatch when building ffmpeg with -mavx, -mavx2, -mavx512f and to allow clang to do more aggressive DCE.
+>
+> All EXEs and DLLs have been hardened with well known runtime mitigations supported by LLVM and Windows and carefully tuned and PGOed to ensure they do not impact performance in any way. Mitigations provided by MinGW CRT are not included currently, as they are unreliable and severely impact performance.
+>
+> One performance bottleneck for mpv is math functions. MinGW used to always use the x87 FPU to implement them, which was too slow. Later, with UCRT, MinGW would use UCRT SSE2 math functions whenever possible, which was a leap forward, but still not fast enough. My builds incorporate a number of improvements to improve math performance.
+>
+> All EXEs and DLLs are built with -fveclib=SLEEF to vectorize math functions, which avoids calling MinGW/UCRT's slow scalar impl. Thanks to [SLEEF](https://github.com/shibatch/sleef)'s ultra-high-performance AVX2/AVX512/NEON/SVE2 vectorized impl, the performance of many audio filters like rubberband has been significantly improved.
+>
+> Due to the extremely poor implementation of fpclassify in MinGW, which causes compilers to generate shit, this problem is addressed by using a modified math.h to redirect fpclassify to builtin_fpclassify, significantly improved the performance of functions like isnan.
+>
+> x86-64 version uses MSVC-compatible 64-bit long double ABI instead of UNIX/MinGW 80-bit long double ABI, so any FP operations are lowered to AVX instead of x87 FPU (software emulated) to improve performance.
+>
+> x86-64 version is PGOed to improve performance.
+>
+> The x86-64-v4 build uses tigerlake as the ISA baseline, but use 512bit vectorwidth.
+>
+> However, due to AVX512 downclocking, performance regression is expected on icelake/rocketlake.
+>
+> Because UCRT memcpy only has an incomplete AVX2-optimized implementation, the x86-64-v4 build uses FSRM to inline memcpy directly into rep movsb, significantly improving memcpy performance. This requires icelake/znver3. Due to consideration of older generations like skylake, the x86-64-v3 build does not have this optimization.
+>
+> To further address performance issues with memcpy and other string functions, ultra-high-performance routines from llvm-libc have been imported to replace UCRT. Functions such as memcpy, memset, and strlen now benefit from universal AVX2/AVX512/NEON/SVE implementations, delivering strong performance even when FSRM is unavailable.
+>
+> Only recommended to znver4/5/tigerlake or modern xeon users to try v4 builds. While it may run on icelake/rocketlake, it will only be slower. skylake-avx512 is unsupported because it makes absolutely no sense.
+>
+> The x86-64-v3 build uses skylake as the ISA baseline.
+>
+> x86-64-v3 and v4 build applied compiler mitigation (`-mno-gather`) to avoid the performance penalty of the DownFall microcode mitigation.
+>
+> All asm have been built with SSE2AVX to avoid AVX/SSE transition penalties, and vzeroupper that are no longer needed have been removed to further improve performance.
+>
+> Eliminated the use of chkstk_ms by increased SizeOfStackCommit to the same 1MB as SizeOfStackReserve. Unlike MSVC's chkstk_ms, compiler-rt's chkstk_ms always perform probing unconditionally rather than only when it is necessary, hence performance issues.
+>
+> All EXEs are integrated with mimalloc.
+>
+> mimalloc is configured with MIMALLOC_ARENA_EAGER_COMMIT=1 MIMALLOC_ALLOW_LARGE_OS_PAGES=1 by default. If you encounter lag issues with mpv, set these to 0.
+>
+> libmpv can't use mimalloc, the only alternative is system-wide Segment Heap:
+> ```
+> reg add “HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Segment Heap” /v Enabled /t REG_DWORD /d 1 /f
+> ```
+> The mpv.exe is built with consoleAllocationPolicy, so make sure you are using Windows 11 24H2 or higher otherwise you will see a console when starting mpv.
+> Alternatively, you can use mpv-legacy.exe
+>
+> The profdata used by PGO is generated manually, so it usually only scrolls every few weeks, during which time there might be random performance regressions.
+>
+> Since profdata's symbol matching does not support source path relocation, PGO in Action builds is less effective than in local builds. Future improvements to the build method for some performance-critical dependencies may mitigate this issue, but it cannot be fundamentally fixed.
+>
+> If LargePages support is enabled on your system, mimalloc will automatically use it, and you can also enable LargePages for exe:
+> ```
+> reg add “HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\mpv.exe” /v UseLargePages /t REG_DWORD /d 1 /f
+> ```
+> You can use [VMMap](https://learn.microsoft.com/en-us/sysinternals/downloads/vmmap) to check if LargePages works or is a placebo.
+>
+> Private Data Locked WS are LargePages explicitly allocated by mimalloc via VirtualAlloc API.
+>
+> Image Locked WS are LargePages coalesced by NT kernel for exe.
+
+Based on <https://github.com/Andarwinux/mpv-winbuild-cmake>.
+
+> [!NOTE]
+>
+> You can use bin-cpuflags-x86 and VTune to analyze whether automatic vectorization has a positive impact on your use case.
+bin-cpuflags-x86 can statically analyze which instructions an executable uses, while VTune can dynamically detect which instructions a program uses and where performance bottlenecks occur.
+> ![vune](vtune.png)
+> ![bin-cpuflags-x86](bin-cpuflags-x86.png)
+
+> [!NOTE]
+>
+> This repo only provides x86-64-v3/v4 and aarch64 version.
+>
+> I have added a znver5 template, if more variants needed just copy and paste it.
+>
+> If you need to customize the build process more, change all `Andarwinux/mpv-winbuild-cmake` to your own fork.
+>
+> If you need to build it yourself, make sure to build the LLVM first, and then the toolchain, otherwise the build is bound to fail.
+>
+> If you build too many times in a short period of time, LLVM and toolchain caches may be pushed out by the build cache, so you will also need to rebuild the whole toolchain.
+>
+> As a workaround, you can remove qBittorrent/Qt, which will significantly reduce the use of the build cache.
 
 ### Release Retention Policy
 
 -   The last 30 days of builds will be retained.
-
-## Information about packages
-
-same as [shinchiro](https://github.com/shinchiro/mpv-winbuild-cmake/blob/master/README.md#information-about-packages) [![](https://flat.badgen.net/github/last-commit/shinchiro/mpv-winbuild-cmake?cache=1800)](https://github.com/shinchiro/mpv-winbuild-cmake)
-
--   Git/Hg
-    -   amf-headers [![amf-headers](https://flat.badgen.net/github/last-commit/GPUOpen-LibrariesAndSDKs/AMF?scale=0.8&cache=1800)](https://github.com/GPUOpen-LibrariesAndSDKs/AMF/tree/master/amf/public/include)
-    -   ANGLE [![ANGLE](https://flat.badgen.net/github/last-commit/google/angle/main?scale=0.8&cache=1800)](https://github.com/google/angle)
-    -   aom [![aom](https://flat.badgen.net/github/last-commit/m-ab-s/aom?scale=0.8&cache=1800)](https://aomedia.googlesource.com/aom)
-    -   avisynth-headers [![avisynth-headers](https://flat.badgen.net/github/last-commit/AviSynth/AviSynthPlus?scale=0.8&cache=1800)](https://github.com/AviSynth/AviSynthPlus)
-    -   bzip2 [![bzip2](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/gitlab.com/bzip2/bzip2?scale=0.8&cache=1800)](https://gitlab.com/bzip2/bzip2)
-    -   dav1d [![dav1d](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/code.videolan.org/videolan/dav1d?scale=0.8&cache=1800)](https://code.videolan.org/videolan/dav1d/)
-    -   davs2 [![davs2](https://flat.badgen.net/github/last-commit/pkuvcl/davs2?scale=0.8&cache=1800)](https://github.com/pkuvcl/davs2)
-    -   expat [![expat](https://flat.badgen.net/github/last-commit/libexpat/libexpat?scale=0.8&cache=1800)](https://github.com/libexpat/libexpat)
-    -   FFmpeg [![FFmpeg](https://flat.badgen.net/github/last-commit/FFmpeg/FFmpeg?scale=0.8&cache=1800)](https://github.com/FFmpeg/FFmpeg)
-    -   fontconfig [![fontconfig](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/gitlab.freedesktop.org/fontconfig/fontconfig?scale=0.8&cache=1800)](https://gitlab.freedesktop.org/fontconfig/fontconfig)
-    -   freetype2 [![freetype2](https://flat.badgen.net/github/last-commit/freetype/freetype?scale=0.8&cache=1800)](https://github.com/freetype/freetype)
-    -   fribidi [![fribidi](https://flat.badgen.net/github/last-commit/fribidi/fribidi?scale=0.8&cache=1800)](https://github.com/fribidi/fribidi)
-    -   harfbuzz [![harfbuzz](https://flat.badgen.net/github/last-commit/harfbuzz/harfbuzz/main?scale=0.8&cache=1800)](https://github.com/harfbuzz/harfbuzz)
-    -   lame [![lame](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/gitlab.com/shinchiro//lame?scale=0.8&cache=1800)](https://gitlab.com/shinchiro/lame)
-    -   lcms2 [![lcms2](https://flat.badgen.net/github/last-commit/mm2/Little-CMS?scale=0.8&cache=1800)](https://github.com/mm2/Little-CMS)
-    -   libarchive [![libarchive](https://flat.badgen.net/github/last-commit/libarchive/libarchive?scale=0.8&cache=1800)](https://github.com/libarchive/libarchive)
-    -   libaribcaption [![libaribcaption](https://flat.badgen.net/github/last-commit/xqq/libaribcaption?scale=0.8&cache=1800)](https://github.com/xqq/libaribcaption)
-    -   libass [![libass](https://flat.badgen.net/github/last-commit/libass/libass?scale=0.8&cache=1800)](https://github.com/libass/libass)
-    -   libbluray [![libbluray](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/code.videolan.org/videolan/libbluray?scale=0.8&cache=1800)](https://code.videolan.org/videolan/libbluray)
-    -   libbs2b [![libbs2b](https://flat.badgen.net/github/last-commit/alexmarsev/libbs2b?scale=0.8&cache=1800)](https://github.com/alexmarsev/libbs2b)
-    -   libdvdcss [![libdvdcss](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/code.videolan.org/videolan/libdvdcss?scale=0.8&cache=1800)](https://code.videolan.org/videolan/libdvdcss)
-    -   libdvdnav [![libdvdnav](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/code.videolan.org/videolan/libdvdnav?scale=0.8&cache=1800)](https://code.videolan.org/videolan/libdvdnav)
-    -   libdvdread [![libdvdread](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/code.videolan.org/videolan/libdvdread?scale=0.8&cache=1800)](https://code.videolan.org/videolan/libdvdread)
-    -   libjpeg [![libjpeg](https://flat.badgen.net/github/last-commit/libjpeg-turbo/libjpeg-turbo/main?scale=0.8&cache=1800)](https://github.com/libjpeg-turbo/libjpeg-turbo)
-    -   libjxl (with [brotli](https://github.com/google/brotli), [highway](https://github.com/google/highway)) [![libjxl](https://flat.badgen.net/github/last-commit/libjxl/libjxl/main?scale=0.8&cache=1800)](https://github.com/libjxl/libjxl)
-    -   libmodplug [![libmodplug](https://flat.badgen.net/github/last-commit/Konstanty/libmodplug?scale=0.8&cache=1800)](https://github.com/Konstanty/libmodplug)
-    -   libmysofa [![libmysofa](https://flat.badgen.net/github/last-commit/hoene/libmysofa/main?scale=0.8&cache=1800)](https://github.com/hoene/libmysofa)
-    -   libplacebo (with [glad](https://github.com/Dav1dde/glad), [fast_float](https://github.com/fastfloat/fast_float), [xxhash](https://github.com/Cyan4973/xxHash)) [![libplacebo](https://flat.badgen.net/github/last-commit/haasn/libplacebo?scale=0.8&cache=1800)](https://github.com/haasn/libplacebo)
-    -   libpng [![libpng](https://flat.badgen.net/github/last-commit/glennrp/libpng?scale=0.8&cache=1800)](https://github.com/glennrp/libpng)
-    -   libsdl2 [![libpng](https://flat.badgen.net/github/last-commit/libsdl-org/SDL/SDL2?style=flat-square&scale=0.8&cache=1800)](https://github.com/libsdl-org/SDL)
-    -   libsoxr [![libsoxr](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/gitlab.com/shinchiro/soxr?scale=0.8&cache=1800)](https://gitlab.com/shinchiro/soxr)
-    -   libsrt [![libsrt](https://flat.badgen.net/github/last-commit/Haivision/srt?scale=0.8&cache=1800)](https://github.com/Haivision/srt)
-    -   libssh [![libssh](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/gitlab.com/libssh/libssh-mirror?scale=0.8&cache=1800)](https://git.libssh.org/projects/libssh.git)
-    -   libudfread [![libdvdcss](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/code.videolan.org/videolan/libudfread?scale=0.8&cache=1800)](https://code.videolan.org/videolan/libudfread)
-    -   libunibreak [![libunibreak](https://flat.badgen.net/github/last-commit/adah1972/libunibreak?scale=0.8&cache=1800)](https://github.com/adah1972/libunibreak)
-    -   libva [![libva](https://flat.badgen.net/github/last-commit/intel/libva?scale=0.8&cache=1800)](https://github.com/intel/libva)
-    -   libvpl [![libvpl](https://flat.badgen.net/github/last-commit/intel/libvpl?scale=0.8&cache=1800)](https://github.com/intel/libvpl)
-    -   libvpx [![libvpx](https://flat.badgen.net/github/last-commit/webmproject/libvpx/main?scale=0.8&cache=1800)](https://chromium.googlesource.com/webm/libvpx)
-    -   libwebp [![libwebp](https://flat.badgen.net/github/last-commit/webmproject/libwebp/main?scale=0.8&cache=1800)](https://chromium.googlesource.com/webm/libwebp)
-    -   libxml2 [![libxml2](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/gitlab.gnome.org/GNOME/libxml2?scale=0.8&cache=1800)](https://gitlab.gnome.org/GNOME/libxml2)
-    -   libzimg (with [graphengine](https://github.com/sekrit-twc/graphengine)) [![libzimg](https://flat.badgen.net/github/last-commit/sekrit-twc/zimg?scale=0.8&cache=1800)](https://github.com/sekrit-twc/zimg)
-    -   libzvbi [![libzvbi](https://flat.badgen.net/github/last-commit/zapping-vbi/zvbi/main?scale=0.8&cache=1800)](https://github.com/zapping-vbi/zvbi)
-    -   luajit [![luajit](https://flat.badgen.net/github/last-commit/openresty/luajit2/v2.1-agentzh?scale=0.8&cache=1800)](https://github.com/openresty/luajit2)
-    -   mpv [![mpv](https://flat.badgen.net/github/last-commit/mpv-player/mpv?scale=0.8&cache=1800)](https://github.com/mpv-player/mpv)
-    -   mujs [![mujs](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/codeberg/ccxvii/mujs?scale=0.8&cache=1800)](https://codeberg.org/ccxvii/mujs)
-    -   nvcodec-headers [![nvcodec-headers](https://flat.badgen.net/github/last-commit/FFmpeg/nv-codec-headers?scale=0.8&cache=1800)](https://git.videolan.org/?p=ffmpeg/nv-codec-headers.git)
-    -   ogg [![ogg](https://flat.badgen.net/github/last-commit/xiph/ogg?scale=0.8&cache=1800)](https://github.com/xiph/ogg)
-    -   openal-soft [![openal-soft](https://flat.badgen.net/github/last-commit/kcat/openal-soft?scale=0.8&cache=1800)](https://github.com/kcat/openal-soft)
-    -   openssl [![openssl](https://flat.badgen.net/github/last-commit/openssl/openssl?scale=0.8&cache=1800)](https://github.com/openssl/openssl)
-    -   opus [![opus](https://flat.badgen.net/github/last-commit/xiph/opus?scale=0.8&cache=1800)](https://github.com/xiph/opus)
-    -   rubberband (with [libsamplerate](https://github.com/libsndfile/libsamplerate.git)) [![rubberband](https://flat.badgen.net/github/last-commit/breakfastquay/rubberband/default?scale=0.8&cache=1800)](https://github.com/breakfastquay/rubberband)
-    -   shaderc (with [spirv-headers](https://github.com/KhronosGroup/SPIRV-Headers), [spirv-tools](https://github.com/KhronosGroup/SPIRV-Tools), [glslang](https://github.com/KhronosGroup/glslang)) [![shaderc](https://flat.badgen.net/github/last-commit/google/shaderc/main?scale=0.8&cache=1800)](https://github.com/google/shaderc)
-    -   speex [![speex](https://flat.badgen.net/github/last-commit/xiph/speex?scale=0.8&cache=1800)](https://github.com/xiph/speex)
-    -   spirv-cross [![spirv-cross](https://flat.badgen.net/github/last-commit/KhronosGroup/SPIRV-Cross/main?scale=0.8&cache=1800)](https://github.com/KhronosGroup/SPIRV-Cross)
-    -   svtav1 [![svtav1](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/gitlab.com/AOMediaCodec/SVT-AV1?scale=0.8&cache=1800)](https://gitlab.com/AOMediaCodec/SVT-AV1)
-    -   uavs3d [![uavs3d](https://flat.badgen.net/github/last-commit/uavs3/uavs3d?scale=0.8&cache=1800)](https://github.com/uavs3/uavs3d)
-    -   uchardet [![uchardet](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/gitlab.freedesktop.org/uchardet/uchardet?scale=0.8&cache=1800)](https://gitlab.freedesktop.org/uchardet/uchardet)
-    -   vorbis [![vorbis](https://flat.badgen.net/github/last-commit/xiph/vorbis?scale=0.8&cache=1800)](https://github.com/xiph/vorbis) 
-    -   vulkan [![Vulkan](https://flat.badgen.net/github/last-commit/KhronosGroup/Vulkan-Loader/main?scale=0.8&cache=1800)](https://github.com/KhronosGroup/Vulkan-Loader) 
-    -   vulkan-header [![Vulkan-Headers](https://flat.badgen.net/github/last-commit/KhronosGroup/Vulkan-Headers/main?scale=0.8&cache=1800)](https://github.com/KhronosGroup/Vulkan-Headers)
-    -   x264 [![x264](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/gitlab/code.videolan.org/videolan/x264?scale=0.8&cache=1800)](https://code.videolan.org/videolan/x264)
-    -   x265 (multilib) [![x265](https://flat.badgen.net/https/latest-commit-badgen.vercel.app/bitbucket/multicoreware/x265_git?scale=0.8&cache=1800)](https://bitbucket.org/multicoreware/x265_git)
-    -   xz [![xz](https://flat.badgen.net/github/last-commit/tukaani-project/xz?scale=0.8&cache=1800)](https://github.com/tukaani-project/xz)
-    -   zlib [![zlib](https://flat.badgen.net/github/last-commit/zlib-ng/zlib-ng?scale=0.8&cache=1800)](https://github.com/zlib-ng/zlib-ng)
-    -   zstd [![zstd](https://flat.badgen.net/github/last-commit/facebook/zstd/dev?scale=0.8&cache=1800)](https://github.com/facebook/zstd)
-
--   Zip
-    -   [xvidcore](https://labs.xvid.com/source/) (1.3.7) 
-    -   [lzo](https://fossies.org/linux/misc/) (2.10)
-    -   [libopenmpt](https://lib.openmpt.org/libopenmpt/download/) (0.7.12)
-    -   [libiconv](https://ftp.gnu.org/pub/gnu/libiconv/) (1.18)
-    -   [vapoursynth](https://github.com/vapoursynth/vapoursynth)  ![](https://img.shields.io/github/v/release/vapoursynth/vapoursynth?style=flat-square)
-
