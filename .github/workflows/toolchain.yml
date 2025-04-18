@@ -9,21 +9,18 @@ on:
       build_target:
         description: "Build target"
         required: false
-        default: "all-64bit"
+        default: "all"
         type: choice
         options:
-        - 32bit
-        - 64bit
         - 64bit-v3
+        - 64bit-adl
         - aarch64
-        - all-64bit
         - all
       compiler:
         required: false
         default: "clang"
         type: choice
         options:
-        - gcc
         - clang
       no_save_cache:
         description: "Don't save caches after success build"
@@ -38,7 +35,7 @@ on:
       release:
         description: "Publish a release"
         required: false
-        default: false
+        default: true
         type: boolean
       run_name:
         description: 'The name displayed in the list of workflow runs'
@@ -58,26 +55,23 @@ jobs:
             let matrix = {};
             let build_target = "${{ inputs.build_target }}"
             switch ( build_target ) {
-              case "32bit":
-                matrix.bit = ["32"];
-                break;
-              case "64bit":
-                matrix.bit = ["64"];
-                break;
               case "64bit-v3":
                 matrix.bit = ["64-v3"];
+                break;
+              case "64bit-adl":
+                matrix.bit = ["64-adl"];
                 break;
               case "aarch64":
                 matrix.bit = ["aarch64"];
                 break;
               case "all-64bit":
-                matrix.bit = ["64","64-v3","aarch64"];
+                matrix.bit = ["64-v3","64-adl","aarch64"];
                 break;
               case "all":
-                matrix.bit = ["32","64","64-v3","aarch64"];
+                matrix.bit = ["64-v3","64-adl","aarch64"];
                 break;
               default:
-                matrix.bit = ["64","64-v3","aarch64"];
+                matrix.bit = ["64-v3","64-adl","aarch64"];
                 break;
             }
             core.setOutput("matrix",JSON.stringify(matrix));
@@ -92,7 +86,7 @@ jobs:
     needs: [params]
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/archlinux/archlinux:base-devel
+      image: cachyos/cachyos-v3:latest
     continue-on-error: true
     strategy:
       matrix: ${{ fromJson(needs.params.outputs.matrix) }}
@@ -100,22 +94,28 @@ jobs:
     steps:
       - name: Install Dependencies
         run: |
-          sudo echo -e "[multilib]\nInclude = /etc/pacman.d/mirrorlist" | sudo tee -a /etc/pacman.conf >/dev/null
-          sudo pacman-key --init
-          sudo pacman-key --populate archlinux
-          sudo pacman -Syu --noconfirm
-          sudo pacman -S --noconfirm --needed git ninja cmake meson wget mimalloc 7zip unzip
+          sudo pacman -Syu --noconfirm || true
+          sudo pacman -Syu --noconfirm || true
+          sudo pacman -Syu --noconfirm || true
+          sudo pacman -S --noconfirm --needed base-devel git ninja cmake meson wget mimalloc go 7zip || true
+          sudo pacman -S --noconfirm --needed base-devel git ninja cmake meson wget mimalloc go 7zip || true
+          sudo pacman -S --noconfirm --needed base-devel git ninja cmake meson wget mimalloc go 7zip || true
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --global pull.rebase true
           git config --global rebase.autoStash true
           git config --global fetch.prune true
+          sudo GOBIN=/usr/bin go install go.chromium.org/luci/cipd/client/cmd/...@latest
+          sudo cipd install fuchsia/third_party/clang/linux-amd64 nightly -root /usr/local/fuchsia-clang
+          echo "PATH=/usr/local/fuchsia-clang/bin:$PATH" >> $GITHUB_ENV
+          echo "SOURCE_DATE_EPOCH=$(date -ud "" +%s)" >> $GITHUB_ENV
+          lscpu
       - uses: actions/checkout@v6
 
       - name: Checkout toolchain
         uses: actions/checkout@v6
         with:
-          repository: shinchiro/mpv-winbuild-cmake
+          repository: Andarwinux/mpv-winbuild-cmake
           path: mpv-winbuild-cmake
           fetch-depth: 0
 
@@ -144,7 +144,8 @@ jobs:
         with:
           bit: "${{ matrix.bit }}"
           compiler: "clang"
-          command: "ninja -C $buildroot/build$bit rebuild_cache && cmake --build $buildroot/build$bit --target llvm-download && ninja -C $buildroot/build$bit llvm-clang"
+          command: "ninja -C $buildroot/build$bit rebuild_cache && ninja -C $buildroot/build$bit toolchains-download || true ; ninja -C $buildroot/build$bit toolchains-download && ninja -C $buildroot/build$bit llvm-clang"
+          extra_option: "-DLLVM_ENABLE_LTO=Thin -DCUSTOM_LIBCXX=ON -DCUSTOM_COMPILER_RT=OFF"
 
       - name: Save Toolchain Cache
         if: ${{ inputs.no_save_cache != true }}
@@ -163,7 +164,8 @@ jobs:
       - name: Collect logs
         if: ${{ always() }}
         run: |
-          sudo 7z a logs.7z $(find mpv-winbuild-cmake -type f -iname "*-*.log" -or -wholename "*/ffbuild/config.log")
+          sudo 7z a logs.7z $(find mpv-winbuild-cmake -type f -iname "*-*.log")
+
       - name: upload logs
         uses: actions/upload-artifact@v7
         if: ${{ always() }}
@@ -171,48 +173,8 @@ jobs:
           name: ${{ matrix.bit }}_logs
           path: logs.7z
 
-  rust:
-    name: Install Rust Toolchain
-    needs: [params]
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/archlinux/archlinux:base-devel
-    continue-on-error: true
-
-    steps:
-      - name: Install Dependencies
-        run: |
-          sudo pacman -Syu --noconfirm
-          sudo pacman -S --noconfirm --needed git ninja cmake meson wget unzip
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config --global pull.rebase true
-          git config --global rebase.autoStash true
-          git config --global fetch.prune true
-      - uses: actions/checkout@v6
-
-      - name: Checkout toolchain
-        uses: actions/checkout@v6
-        with:
-          repository: shinchiro/mpv-winbuild-cmake
-          path: mpv-winbuild-cmake
-          fetch-depth: 0
-
-      - name: Install Rust Toolchain
-        uses: ./action/build_toolchain
-        with:
-          bit: "64-v3"
-          command: "ninja -C $buildroot/build$bit rustup && ninja -C $buildroot/build$bit cargo-clean"
-
-      - name: Save Rust Cache
-        if: ${{ inputs.no_save_cache != true }}
-        uses: actions/cache/save@v5.0.5
-        with:
-          path: ${{ github.workspace }}/mpv-winbuild-cmake/install_rustup
-          key: rust-${{ needs.params.outputs.cache_suffix }}
-
   trigger:
-    needs: [build,params,rust]
+    needs: [build,params]
     if: ${{ always() && inputs.trigger_build != false && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
     permissions:
@@ -226,7 +188,7 @@ jobs:
           script: |
             let build_target=new Set();
             const release = ${{ inputs.release }};
-            const targets = {"build64-v3":"64bit-v3","build64":"64bit","build32":"32bit","buildaarch64":"aarch64"}
+            const targets = {"build64-v3":"64bit-v3","build64-adl":"64bit-adl","buildaarch64":"aarch64"}
             const repo="${{github.repository}}".split('/')[1];
             const cache_suffix="${{ needs.params.outputs.cache_suffix }}";
             const cache = await github.rest.actions.getActionsCacheList({
@@ -250,15 +212,10 @@ jobs:
               }
             }
             if(build_target.size>0){
-              if(build_target.has("64bit-v3") && build_target.has("64bit") && build_target.has("aarch64")) {
+              if(build_target.has("64bit-v3") && build_target.has("64bit-adl") && build_target.has("aarch64")) {
                 build_target.delete("64bit-v3");
-                build_target.delete("64bit");
+                build_target.delete("64bit-adl");
                 build_target.delete("aarch64");
-                build_target.add("all-64bit");
-              }
-              if(build_target.has("all-64bit") && build_target.has("32bit")) {
-                build_target.delete("all-64bit");
-                build_target.delete("32bit");
                 build_target.add("all");
               }
               for (const t of build_target){
@@ -279,27 +236,3 @@ jobs:
             } else {
               core.setFailed("Don't find any success build cache");
             }
-  cache_llvm:
-    name: keep llvm cache alive
-    needs: [build,params]
-    if: ${{ always() && inputs.compiler =='clang' }}
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/archlinux/archlinux:base-devel
-    continue-on-error: true
-
-    steps:
-      - name: Prepare
-        run: |
-          sudo pacman -Syu --noconfirm
-          sudo pacman -S --noconfirm --needed git curl
-      - uses: actions/checkout@v6
-      
-      - name: Resave llvm cache
-        id: llvm
-        continue-on-error: true
-        uses: ./action/resave_cache
-        with: 
-          path: mpv-winbuild-cmake/clang_root
-          key: llvm-
-          restore-keys: llvm-
