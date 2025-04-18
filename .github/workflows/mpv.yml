@@ -12,14 +12,11 @@ on:
       build_target:
         description: "Build target"
         required: false
-        default: "all-64bit"
+        default: "all"
         type: choice
         options:
-        - 32bit
-        - 64bit
         - 64bit-v3
         - aarch64
-        - all-64bit
         - all
       lgpl:
         description: "Also build lgpl libmpv"
@@ -31,7 +28,6 @@ on:
         default: "clang"
         type: choice
         options:
-        - gcc
         - clang
       needclean:
         description: 'Build without cache'
@@ -46,7 +42,7 @@ on:
       release:
         description: "Publish a release"
         required: false
-        default: false
+        default: true
         type: boolean
       command:
         description: 'input command you want to run before build'
@@ -81,26 +77,17 @@ jobs:
             let matrix = {};
             let build_target = "${{ inputs.build_target }}"
             switch ( build_target ) {
-              case "32bit":
-                matrix.bit = ["32"];
-                break;
-              case "64bit":
-                matrix.bit = ["64"];
-                break;
               case "64bit-v3":
                 matrix.bit = ["64-v3"];
                 break;
               case "aarch64":
                 matrix.bit = ["aarch64"];
                 break;
-              case "all-64bit":
-                matrix.bit = ["64","64-v3","aarch64"];
-                break;
               case "all":
-                matrix.bit = ["32","64","64-v3","aarch64"];
+                matrix.bit = ["64-v3","aarch64"];
                 break;
               default:
-                matrix.bit = ["64","64-v3","aarch64"];
+                matrix.bit = ["64-v3","aarch64"];
                 break;
             }
             core.setOutput("matrix_bit",JSON.stringify(matrix));
@@ -173,7 +160,7 @@ jobs:
     needs: params
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/archlinux/archlinux:base-devel
+      image: cachyos/cachyos-v3:latest
     continue-on-error: true
     strategy:
       matrix: ${{ fromJson(needs.params.outputs.matrix) }}
@@ -181,23 +168,31 @@ jobs:
     steps:
       - name: Install Dependencies
         run: |
-          sudo echo -e "[multilib]\nInclude = /etc/pacman.d/mirrorlist" | sudo tee -a /etc/pacman.conf >/dev/null
-          sudo pacman-key --init
-          sudo pacman-key --populate archlinux
-          sudo pacman -Syu --noconfirm
-          sudo pacman -S --noconfirm --needed git ninja cmake meson clang lld libc++ unzip ragel yasm nasm gperf rst2pdf lib32-gcc-libs lib32-glib2 python-cairo curl wget mimalloc ccache python-pip 7zip
-          sudo pacman -U --noconfirm https://archive.archlinux.org/packages/m/meson/meson-1.9.2-1-any.pkg.tar.zst
-          sudo python -m pip install --break-system-packages roman
+          sudo pacman -Syu --noconfirm || true
+          sudo pacman -Syu --noconfirm || true
+          sudo pacman -Syu --noconfirm || true
+          sudo pacman -S --noconfirm --needed base-devel git ninja cmake meson unzip ragel yasm nasm gperf rst2pdf python-cairo curl wget mimalloc go ccache wine bin-cpuflags-x86 shaderc || true
+          sudo pacman -S --noconfirm --needed base-devel git ninja cmake meson unzip ragel yasm nasm gperf rst2pdf python-cairo curl wget mimalloc go ccache wine bin-cpuflags-x86 shaderc || true
+          sudo pacman -S --noconfirm --needed base-devel git ninja cmake meson unzip ragel yasm nasm gperf rst2pdf python-cairo curl wget mimalloc go ccache wine bin-cpuflags-x86 shaderc || true
+          mkdir -p /home/opt/7zip || true
+          wget -qO - https://www.7-zip.org/a/7z2501-linux-x64.tar.xz | tar -xJf - -C /home/opt/7zip 7zzs || true
+          wget -qO - https://www.7-zip.org/a/7z2501-linux-x64.tar.xz | tar -xJf - -C /home/opt/7zip 7zzs || true
+          wget -qO - https://www.7-zip.org/a/7z2501-linux-x64.tar.xz | tar -xJf - -C /home/opt/7zip 7zzs || true
+          sudo ln -s /home/opt/7zip/7zzs /usr/bin/7z || true
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --global pull.rebase true
           git config --global rebase.autoStash true
           git config --global fetch.prune true
+          sudo GOBIN=/usr/bin go install go.chromium.org/luci/cipd/client/cmd/...@latest
+          sudo cipd install fuchsia/third_party/clang/linux-amd64 nightly -root /usr/local/fuchsia-clang
+          echo "PATH=/usr/local/fuchsia-clang/bin:$PATH" >> $GITHUB_ENV
+          lscpu
       - uses: actions/checkout@v6
       - name: Checkout toolchain
         uses: actions/checkout@v6
         with:
-          repository: shinchiro/mpv-winbuild-cmake
+          repository: Andarwinux/mpv-winbuild-cmake
           path: mpv-winbuild-cmake
           fetch-depth: 0
       - name: Prepare
@@ -269,16 +264,6 @@ jobs:
           key: ${{ matrix.bit }}-clang_root-${{ env.key_suffix }}
           restore-keys: |
             ${{ matrix.bit }}-clang_root-${{ env.restore_suffix }}
-
-      - name: Restore Rust Cache
-        if: ${{ false }}
-        uses: actions/cache/restore@v5.0.1
-        id: cache_rust
-        with:
-          path: ${{ github.workspace }}/mpv-winbuild-cmake/install_rustup
-          key: rust-${{ env.key_suffix }}
-          restore-keys: |
-            rust-${{ env.restore_suffix }}
       - name: Restore Source Cache
         uses: actions/cache/restore@v5.0.1
         with:
@@ -308,8 +293,9 @@ jobs:
           override_cache_key: ccache-build${{ matrix.bit }}-${{ inputs.compiler }}
           ccache_options: |
             cache_dir=${{ github.workspace }}/.ccache
-            max_size=500M
-            sloppiness=locale,time_macros
+            max_size=1G
+            sloppiness=locale,time_macros,pch_defines
+            compression=true
             compiler_check=none
 
       - name: Download mpv patch
@@ -354,13 +340,9 @@ jobs:
           srcdir=$(pwd)/src_packages
           
           builddir=$buildroot/build$bit
-          if [ $bit == "32" ]; then
-              arch="i686"
-          elif [ $bit == "64" ]; then
+          if [ $bit == "64-v3" ]; then
               arch="x86_64"
-          elif [ $bit == "64-v3" ]; then
-              arch="x86_64"
-              gcc_arch=-DGCC_ARCH=x86-64-v3
+              gcc_arch=-DMARCH=x86-64-v3
               x86_64_level=-v3
           elif [ $bit == "aarch64" ]; then
               arch="aarch64"
@@ -411,16 +393,10 @@ jobs:
         with:
           script: |
             const path = require('path');
-            const types = ["mpv-debug", "mpv-dev", "mpv"];
+            const types = ["mpv"];
             const lgpl = ${{ matrix.lgpl }} ? "-lgpl" : "";
             let arch="";
             switch ( "${{ matrix.bit }}" ) {
-              case "32":
-                arch = "i686";
-                break;
-              case "64":
-                arch = "x86_64";
-                break;
               case "64-v3":
                 arch = "x86_64-v3";
                 break;
@@ -438,26 +414,104 @@ jobs:
               }
             }
             
+            let mimalloc_r_path = "";
+            let mimalloc_o_path = "";
+            const globber_vulkan = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/vulkan-1.dll`);
+            const vulkan_path = (await globber_vulkan.glob())[0];
+            if ( arch != "aarch64" ){
+              const globber_mimalloc_r = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/mimalloc-redirect.dll`);
+              mimalloc_r_path = (await globber_mimalloc_r.glob())[0];
+              const globber_mimalloc_o = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/mimalloc.dll`);
+              mimalloc_o_path = (await globber_mimalloc_o.glob())[0];
+            }else{
+              const globber_mimalloc_r = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/mimalloc-redirect-arm64.dll`);
+              mimalloc_r_path = (await globber_mimalloc_r.glob())[0];
+              const globber_mimalloc_o = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/mimalloc.dll`);
+              mimalloc_o_path = (await globber_mimalloc_o.glob())[0];
+            }
+
             let { stdout: ffmpeg_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/ffmpeg rev-parse --short HEAD");
             ffmpeg_hash = ffmpeg_hash.trim();
             const ffmpeg_name = `ffmpeg${lgpl}-${arch}-git-${ffmpeg_hash}`;
-            core.exportVariable( 'ffmpeg_name', ffmpeg_name );
-            const globber = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/ffmpeg.exe`);
-            const ffmpeg_path = (await globber.glob())[0]
-            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${ffmpeg_name}.7z ${ffmpeg_path}`)
+            core.exportVariable('ffmpeg_name', ffmpeg_name);
+            const globber_ffmpeg = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/ffmpeg.exe`);
+            const ffmpeg_path = (await globber_ffmpeg.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${ffmpeg_name}.7z ${ffmpeg_path} ${vulkan_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
 
-      - name: upload mpv-debug
-        uses: actions/upload-artifact@v6
-        if: ${{ env.mpv-debug_name && env.mpv-debug_path }}
-        with:
-          name: ${{ env.mpv-debug_name }}
-          path: ${{ env.mpv-debug_path }}
-      - name: upload mpv-dev
-        uses: actions/upload-artifact@v6
-        if: ${{ env.mpv-dev_name && env.mpv-dev_path }}
-        with:
-          name: ${{ env.mpv-dev_name }}
-          path: ${{ env.mpv-dev_path }}
+            let { stdout: qbittorrent_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/qbittorrent rev-parse --short HEAD");
+            qbittorrent_hash = qbittorrent_hash.trim();
+            const qbittorrent_name = `qbittorrent-${arch}-git-${qbittorrent_hash}`;
+            core.exportVariable('qbittorrent_name', qbittorrent_name);
+            const globber_qbittorrent = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/qbittorrent.exe`);
+            const qbittorrent_path = (await globber_qbittorrent.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${qbittorrent_name}.7z ${qbittorrent_path} ${vulkan_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: mpc_qt_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/mpc-qt rev-parse --short HEAD");
+            mpc_qt_hash = mpc_qt_hash.trim();
+            const mpc_qt_name = `mpc-qt-${arch}-git-${mpc_qt_hash}`;
+            core.exportVariable('mpc_qt_name', mpc_qt_name);
+            const globber_mpc_qt = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/mpc-qt.exe`);
+            const mpc_qt_path = (await globber_mpc_qt.glob())[0];
+            const globber_mpc_qt_pdb = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/mpc-qt.pdb`);
+            const mpc_qt_pdb_path = (await globber_mpc_qt_pdb.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${mpc_qt_name}.7z ${mpc_qt_path} ${mpc_qt_pdb_path} ${vulkan_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: mpv_debug_plugin_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/mpv-debug-plugin rev-parse --short HEAD");
+            mpv_debug_plugin_hash = mpv_debug_plugin_hash.trim();
+            const mpv_debug_plugin_name = `mpv-debug-plugin-${arch}-git-${mpv_debug_plugin_hash}`;
+            core.exportVariable('mpv-debug-plugin_name', mpv_debug_plugin_name);
+            const globber_mpv_debug_plugin = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/debug.dll`);
+            const mpv_debug_plugin_path = (await globber_mpv_debug_plugin.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${mpv_debug_plugin_name}.7z ${mpv_debug_plugin_path}`);
+
+            let { stdout: mpv_menu_plugin_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/mpv-menu-plugin rev-parse --short HEAD");
+            mpv_menu_plugin_hash = mpv_menu_plugin_hash.trim();
+            const mpv_menu_plugin_name = `mpv-menu-plugin-${arch}-git-${mpv_menu_plugin_hash}`;
+            core.exportVariable('mpv-menu-plugin_name', mpv_menu_plugin_name);
+            const globber_mpv_menu_plugin = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/menu.dll`);
+            const mpv_menu_plugin_path = (await globber_mpv_menu_plugin.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${mpv_menu_plugin_name}.7z ${mpv_menu_plugin_path}`);
+
+            let { stdout: curl_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/curl rev-parse --short HEAD");
+            curl_hash = curl_hash.trim();
+            const curl_name = `curl-${arch}-git-${curl_hash}`;
+            core.exportVariable('curl_name', curl_name);
+            const globber_curl = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/curl.exe`);
+            const curl_path = (await globber_curl.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${curl_name}.7z ${curl_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: mujs_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/mujs rev-parse --short HEAD");
+            mujs_hash = mujs_hash.trim();
+            const mujs_name = `mujs-${arch}-git-${mujs_hash}`;
+            core.exportVariable('mujs_name', mujs_name);
+            const globber_mujs = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/mujs.exe`);
+            const mujs_path = (await globber_mujs.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${mujs_name}.7z ${mujs_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: aria2_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/aria2 rev-parse --short HEAD");
+            aria2_hash = aria2_hash.trim();
+            const aria2_name = `aria2-${arch}-git-${aria2_hash}`;
+            core.exportVariable('aria2_name', aria2_name);
+            const globber_aria2 = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/aria2c.exe`);
+            const aria2_path = (await globber_aria2.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${aria2_name}.7z ${aria2_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: mediainfo_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/mediainfo rev-parse --short HEAD");
+            mediainfo_hash = mediainfo_hash.trim();
+            const mediainfo_name = `mediainfo-${arch}-git-${mediainfo_hash}`;
+            core.exportVariable('mediainfo_name', mediainfo_name);
+            const globber_mediainfo = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/mediainfo.exe`);
+            const mediainfo_path = (await globber_mediainfo.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${mediainfo_name}.7z ${mediainfo_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
+            let { stdout: svtav1_psy_hash } = await exec.getExecOutput("git -C mpv-winbuild-cmake/src_packages/svtav1-psy rev-parse --short HEAD");
+            svtav1_psy_hash = svtav1_psy_hash.trim();
+            const svtav1_psy_name = `svtav1-psy-${arch}-git-${svtav1_psy_hash}`;
+            core.exportVariable('svtav1_psy_name', svtav1_psy_name);
+            const globber_svtav1_psy = await glob.create(`./mpv-winbuild-cmake/build${{ matrix.bit }}/**/SvtAv1EncApp-PSY.exe`);
+            const svtav1_psy_path = (await globber_svtav1_psy.glob())[0];
+            await exec.exec(`7z a -m0=lzma2 -mx=9 -ms=on mpv-winbuild-cmake/release/${svtav1_psy_name}.7z ${svtav1_psy_path} ${mimalloc_r_path} ${mimalloc_o_path}`);
+
       - name: upload mpv
         uses: actions/upload-artifact@v6
         if: ${{ env.mpv_name && env.mpv_path }}
@@ -472,30 +526,96 @@ jobs:
           name: ${{ env.ffmpeg_name }}
           path: mpv-winbuild-cmake/release/${{ env.ffmpeg_name }}.7z
 
+      - name: upload qbittorrent
+        uses: actions/upload-artifact@v6
+        if: ${{ env.qbittorrent_name }}
+        with:
+          name: ${{ env.qbittorrent_name }}
+          path: mpv-winbuild-cmake/release/${{ env.qbittorrent_name }}.7z
+
+      - name: upload mpc-qt
+        uses: actions/upload-artifact@v6
+        if: ${{ env.mpc_qt_name }}
+        with:
+          name: ${{ env.mpc_qt_name }}
+          path: mpv-winbuild-cmake/release/${{ env.mpc_qt_name }}.7z
+
+      - name: upload curl
+        uses: actions/upload-artifact@v6
+        if: ${{ env.curl_name }}
+        with:
+          name: ${{ env.curl_name }}
+          path: mpv-winbuild-cmake/release/${{ env.curl_name }}.7z
+
+      - name: upload mujs
+        uses: actions/upload-artifact@v6
+        if: ${{ env.mujs_name }}
+        with:
+          name: ${{ env.mujs_name }}
+          path: mpv-winbuild-cmake/release/${{ env.mujs_name }}.7z
+
+      - name: upload aria2
+        uses: actions/upload-artifact@v6
+        if: ${{ env.aria2_name }}
+        with:
+          name: ${{ env.aria2_name }}
+          path: mpv-winbuild-cmake/release/${{ env.aria2_name }}.7z
+
+      - name: upload mediainfo
+        uses: actions/upload-artifact@v6
+        if: ${{ env.mediainfo_name }}
+        with:
+          name: ${{ env.mediainfo_name }}
+          path: mpv-winbuild-cmake/release/${{ env.mediainfo_name }}.7z
+
+      - name: upload svtav1-psy
+        uses: actions/upload-artifact@v6
+        if: ${{ env.svtav1_psy_name }}
+        with:
+          name: ${{ env.svtav1_psy_name }}
+          path: mpv-winbuild-cmake/release/${{ env.svtav1_psy_name }}.7z
+
+      - name: upload mpv-debug-plugin
+        uses: actions/upload-artifact@v6
+        if: ${{ env.mpv-debug-plugin_name }}
+        with:
+          name: ${{ env.mpv-debug-plugin_name }}
+          path: mpv-winbuild-cmake/release/${{ env.mpv-debug-plugin_name }}.7z
+
+      - name: upload mpv-menu-plugin
+        uses: actions/upload-artifact@v6
+        if: ${{ env.mpv-menu-plugin_name }}
+        with:
+          name: ${{ env.mpv-menu-plugin_name }}
+          path: mpv-winbuild-cmake/release/${{ env.mpv-menu-plugin_name }}.7z
+
       - name: Save clang sysroot cache
-        if: ${{ inputs.compiler =='clang' && inputs.no_save_cache != true && matrix.lgpl != true }}
+        if: ${{ always() }}
         uses: actions/cache/save@v5.0.1
         with: 
           path: ${{ github.workspace }}/mpv-winbuild-cmake/clang_root
           key: ${{ matrix.bit }}-clang_root-${{ env.cache_suffix }}
       - name: Save Sources Cache
-        if: ${{ inputs.no_save_cache != true && matrix.lgpl != true }}
+        if: ${{ always() }}
         uses: actions/cache/save@v5.0.1
         with:
           path: ${{ github.workspace }}/mpv-winbuild-cmake/src_packages
           key: source-${{ env.cache_suffix }}
-      - name: Save Rust Cache
-        if: ${{ inputs.no_save_cache != true && matrix.lgpl != true }}
-        uses: actions/cache/save@v5.0.1
-        with:
-          path: ${{ github.workspace }}/mpv-winbuild-cmake/install_rustup
-          key: rust-${{ env.cache_suffix }}
       - name: Save Build Cache
-        if: ${{ inputs.no_save_cache != true && matrix.lgpl != true }}
+        if: ${{ always() }}
         uses: actions/cache/save@v5.0.1
         with:
           path: ${{ github.workspace }}/mpv-winbuild-cmake/build${{ matrix.bit }}
           key: ${{ env.build_save_key }}
+      - name: Keep llvm cache alive
+        if: ${{ always() }}
+        uses: actions/cache/restore@v5.0.1
+        with:
+          path: mpv-winbuild-cmake/clang_root
+          key: llvm-${{ env.toolchain_version }}
+          restore-keys: |
+            llvm-
+          lookup-only: true
 
       - name: "Job summary"
         uses: actions/github-script@v8
@@ -580,7 +700,7 @@ jobs:
             const upstream_url = getCommitUrl(upstream_remote_hash, upstream_remote);
 
             const exec_path = path.join(upstreamDir,'build${{ matrix.bit }}','exec');
-            const compiler_version = (await myExec(`${exec_path}`,["cross-gcc","--version","||","clang","--version"])).split('\n')[0];
+            const compiler_version = (await myExec(`${exec_path}`,["cross-gcc","--version","||","nvcc","--version"])).split('\n')[0];
                         
             core.summary
               .addRaw(`mpv-winbuild-cmake: ${upstream_status} (remote:<a href="${upstream_url}">${upstream_remote_hash.slice(0,7)}</a>)`,true)
@@ -610,7 +730,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           path: artifacts
-          pattern: '{mpv,ffmpeg}*'
+          pattern: '{mpv,ffmpeg,qbittorrent,mpc-qt,curl,mujs,aria2,mediainfo,svtav1-psy}*'
           merge-multiple: true
     
       - name: "Check artifacts"
@@ -666,10 +786,8 @@ jobs:
             note+="**Download Tips:**\n";
             const path = require('path');
             const tips = {
-              "i686": "for 32 bit system",
-              "x86_64": "for 64 bit system",
-              "x86_64-v3": "for 64 bit system with cpu not older than Intel Haswell or AMD Excavator",
-              "aarch64": "for ARM64(aarch64)"
+              "x86_64-v3": "for x64 system with cpu not older than Intel Skylake or AMD Zen",
+              "aarch64": "for arm64 system with cpu not older than cortex-a76/a55(v8.2-a)"
             }
             async function getTips(arch){
               const globber = await glob.create(`artifacts/mpv-${arch}-[0-9]*.7z`);
@@ -691,7 +809,7 @@ jobs:
             const { basename } = require('path');
             const { createHash } = require('crypto');
             const { readFileSync,writeFileSync } = require('fs');
-            const globber = await glob.create([`artifacts/mpv*.7z`,`artifacts/ffmpeg*.7z`].join('\n'));
+            const globber = await glob.create([`artifacts/mpv*.7z`,`artifacts/ffmpeg*.7z`,`artifacts/qbittorrent*.7z`,`artifacts/mpc-qt*.7z`,`artifacts/curl*.7z`,`artifacts/mujs*.7z`,`artifacts/aria2*.7z`,`artifacts/mediainfo*.7z`,`artifacts/svtav1*.7z`].join('\n'));
             const files = await globber.glob();
             if ( files.length > 0 ) {
               let sha256="";
@@ -706,7 +824,7 @@ jobs:
       - name: Create release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "artifacts/mpv*.7z,artifacts/ffmpeg*.7z,sha256.txt"
+          artifacts: "artifacts/mpv*.7z,artifacts/ffmpeg*.7z,artifacts/qbittorrent*.7z,artifacts/mpc-qt*.7z,artifacts/curl*.7z,artifacts/mujs*.7z,artifacts/aria2*.7z,artifacts/mediainfo*.7z,artifacts/svtav1*.7z,sha256.txt"
           commit: version
           name: "${{ env.long_time }}"
           body: "${{ steps.note.outputs.note }}"
@@ -734,7 +852,7 @@ jobs:
     if: ${{ inputs.no_save_cache != true }}
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/archlinux/archlinux:base-devel
+      image: cachyos/cachyos-v3:latest
     continue-on-error: true
     strategy:
       matrix: ${{ fromJson(needs.params.outputs.matrix_bit) }}
@@ -777,11 +895,11 @@ jobs:
           
   cache_llvm:
     name: keep llvm cache alive
-    needs: [params,build_mpv]
+    needs: [params,build_mpv,cache]
     if: ${{ inputs.no_save_cache != true && inputs.compiler =='clang' }}
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/archlinux/archlinux:base-devel
+      image: cachyos/cachyos-v3:latest
     continue-on-error: true
 
     steps:

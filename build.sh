@@ -11,21 +11,11 @@ main() {
     simple_package=$3
 
     prepare
-    if [ "$target" == "32" ]; then
-        package "32" 
-    elif [ "$target" == "64" ]; then
-        package "64"
-    elif [ "$target" == "64-v3" ]; then
+    if [ "$target" == "64-v3" ]; then
         package "64-v3"
     elif [ "$target" == "aarch64" ]; then
         package "aarch64"
-    elif [ "$target" == "all-64" ]; then
-        package "64"
-        package "64-v3"
-        package "aarch64"
-    else [ "$target" == "all" ];
-        package "32"
-        package "64"
+    elif [ "$target" == "all" ]; then
         package "64-v3"
         package "aarch64"
     fi
@@ -34,19 +24,15 @@ main() {
 
 package() {
     local bit=$1
-    if [ $bit == "32" ]; then
-        local arch="i686"
-    elif [ $bit == "64" ]; then
+    if [ $bit == "64-v3" ]; then
         local arch="x86_64"
-    elif [ $bit == "64-v3" ]; then
-        local arch="x86_64"
-        local gcc_arch="-DGCC_ARCH=x86-64-v3"
+        local gcc_arch="-DMARCH=skylake"
         local x86_64_level="-v3"
     elif [ $bit == "aarch64" ]; then
         local arch="aarch64"
     fi
 
-    build $bit $arch $gcc_arch
+    build $bit $arch $gcc_arch $x86_64_level
     zip $bit $arch $x86_64_level
     sudo rm -rf $buildroot/build$bit/mpv-*
     sudo chmod -R a+rwx $buildroot/build$bit
@@ -56,28 +42,56 @@ build() {
     local bit=$1
     local arch=$2
     local gcc_arch=$3
-    
+    local x86_64_level=$4
+
+    export PATH="/usr/local/fuchsia-clang/bin:$PATH"
+    wget https://github.com/Andarwinux/mpv-winbuild/releases/download/pgo/pgo.profdata
+    wget https://github.com/Andarwinux/mimalloc/raw/refs/heads/dev2/bin/minject.exe
+
     if [ "$compiler" == "clang" ]; then
-        clang_option=(-DCMAKE_INSTALL_PREFIX=$clang_root -DMINGW_INSTALL_PREFIX=$buildroot/build$bit/install/$arch-w64-mingw32 -DCLANG_PACKAGES_LTO=ON)
+        clang_option=(-DCMAKE_INSTALL_PREFIX=$clang_root -DMINGW_INSTALL_PREFIX=$buildroot/build$bit/install/$arch-w64-mingw32)
+        pgo_option=(-DCLANG_PACKAGES_PGO=USE -DCLANG_PACKAGES_PROFDATA_FILE="./pgo.profdata")
     fi
-    cmake -Wno-dev --fresh -DTARGET_ARCH=$arch-w64-mingw32 $gcc_arch -DCOMPILER_TOOLCHAIN=$compiler "${clang_option[@]}" $extra_option -DENABLE_CCACHE=ON -DSINGLE_SOURCE_LOCATION=$srcdir -DRUSTUP_LOCATION=$buildroot/install_rustup -G Ninja -H$gitdir -B$buildroot/build$bit
+
+    if [ "$arch" == "x86_64" ]; then
+        if [ "$x86_64_level" == "-v3" ]; then
+            arch_option=(-DMARCH_NAME=-v3)
+        fi
+    fi
+
+    cmake --fresh -DTARGET_ARCH=$arch-w64-mingw32 $gcc_arch -DCOMPILER_TOOLCHAIN=$compiler "${clang_option[@]}" "${pgo_option[@]}" "${arch_option[@]}" $extra_option -DENABLE_LEGACY_MPV=ON -DENABLE_CCACHE=ON -DQT_DISABLE_CCACHE=ON -DSINGLE_SOURCE_LOCATION=$srcdir -G Ninja -H$gitdir -B$buildroot/build$bit
 
     ninja -C $buildroot/build$bit download || true
-
-    if [ "$compiler" == "gcc" ] && [ ! -f "$buildroot/build$bit/install/bin/cross-gcc" ]; then
-        ninja -C $buildroot/build$bit gcc && rm -rf $buildroot/build$bit/toolchain
-    elif [ "$compiler" == "clang" ] && [ ! "$(ls -A $clang_root/bin/clang)" ]; then
-        ninja -C $buildroot/build$bit llvm && ninja -C $buildroot/build$bit llvm-clang
-    fi
-
-    if [[ ! "$(ls -A $buildroot/install_rustup/.cargo/bin)" ]]; then
-        ninja -C $buildroot/build$bit rustup-fullclean
-        ninja -C $buildroot/build$bit rustup
-    fi
+    ninja -C $buildroot/build$bit update || true
     ninja -C $buildroot/build$bit update
     ninja -C $buildroot/build$bit mpv-fullclean
-    
-    ninja -C $buildroot/build$bit mpv
+    ninja -C $buildroot/build$bit download
+    ninja -C $buildroot/build$bit patch
+
+    ninja -C $buildroot/build$bit qbittorrent
+    ninja -C $buildroot/build$bit curl aria2 mediainfo svtav1-psy mimalloc
+    ninja -C $buildroot/build$bit mpv mpv-menu-plugin mpv-debug-plugin mpc-qt
+
+    sudo wine ./minject.exe $buildroot/build$bit/mpv-*/mpv.exe --inplace -y
+    sudo wine ./minject.exe $buildroot/build$bit/mpv-*/mpv-legacy.exe --inplace -y
+    sudo wine ./minject.exe $buildroot/build$bit/install/$arch-w64-mingw32/bin/ffmpeg.exe --inplace -y
+    sudo wine ./minject.exe $buildroot/build$bit/install/$arch-w64-mingw32/bin/curl.exe --inplace -y
+    sudo wine ./minject.exe $buildroot/build$bit/install/$arch-w64-mingw32/bin/mujs.exe --inplace -y
+    sudo wine ./minject.exe $buildroot/build$bit/install/$arch-w64-mingw32/bin/aria2c.exe --inplace -y
+    sudo wine ./minject.exe $buildroot/build$bit/install/$arch-w64-mingw32/bin/mediainfo.exe --inplace -y
+    sudo wine ./minject.exe $buildroot/build$bit/install/$arch-w64-mingw32/bin/SvtAv1EncApp-PSY.exe --inplace -y
+    sudo wine ./minject.exe $buildroot/build$bit/install/$arch-w64-mingw32/bin/qbittorrent.exe --inplace -y
+    sudo wine ./minject.exe $buildroot/build$bit/install/$arch-w64-mingw32/bin/mpc-qt.exe --inplace -y
+
+    if [ "$arch" == "x86_64" ]; then
+        cp $buildroot/build$bit/install/$arch-w64-mingw32/bin/mimalloc{-redirect,}.dll $buildroot/build$bit/mpv-$arch$x86_64_level*/
+        cp $buildroot/build$bit/install/$arch-w64-mingw32/bin/vulkan-1.dll $buildroot/build$bit/mpv-$arch$x86_64_level*/
+        bin-cpuflags-x86 -d $buildroot/build$bit/mpv-*/mpv.exe > instrinfo.txt
+        cp instrinfo.txt $buildroot/build$bit/mpv-$arch$x86_64_level*/
+    elif [ "$arch" == "aarch64" ]; then
+        cp $buildroot/build$bit/install/$arch-w64-mingw32/bin/mimalloc{-redirect-arm64,}.dll $buildroot/build$bit/mpv-$arch*/
+        cp $buildroot/build$bit/install/$arch-w64-mingw32/bin/vulkan-1.dll $buildroot/build$bit/mpv-$arch*/
+    fi
 
     if [ -n "$(find $buildroot/build$bit -maxdepth 1 -type d -name "mpv*$arch*" -print -quit)" ] ; then
         echo "Successfully compiled $bit-bit. Continue"
@@ -85,8 +99,8 @@ build() {
         echo "Failed compiled $bit-bit. Stop"
         exit 1
     fi
-    
-    ninja -C $buildroot/build$bit cargo-clean
+
+    ninja -C $buildroot/build$bit ccache-recomp
 }
 
 zip() {
@@ -110,10 +124,10 @@ zip() {
 }
 
 download_mpv_package() {
-    local package_url="https://codeload.github.com/zhongfly/mpv-packaging/zip/master"
+    local package_url="https://codeload.github.com/Andarwinux/mpv-packaging/zip/master"
     if [ -e mpv-packaging.zip ]; then
         echo "Package exists. Check if it is newer.."
-        remote_commit=$(git ls-remote https://github.com/zhongfly/mpv-packaging.git master | awk '{print $1;}')
+        remote_commit=$(git ls-remote https://github.com/Andarwinux/mpv-packaging.git master | awk '{print $1;}')
         local_commit=$(unzip -z mpv-packaging.zip | tail +2)
         if [ "$remote_commit" != "$local_commit" ]; then
             wget -qO mpv-packaging.zip $package_url
