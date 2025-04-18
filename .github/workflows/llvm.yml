@@ -7,7 +7,7 @@ on:
       pgo:
         description: "Build llvm with PGO"
         required: false
-        default: false
+        default: true
         type: boolean   
       no_save_cache:
         description: "Don't save caches after success build"
@@ -17,24 +17,21 @@ on:
       trigger_toolchain:
         description: "Trigger toolchain build action after success build"
         required: false
-        default: true
+        default: false
         type: boolean
       build_target:
         description: "Toolchain build target"
         required: false
-        default: "all-64bit"
+        default: "all"
         type: choice
         options:
-        - 32bit
-        - 64bit
         - 64bit-v3
         - aarch64
-        - all-64bit
         - all
       trigger_build:
         description: "Trigger mpv build action after toolchain build"
         required: false
-        default: true
+        default: false
         type: boolean
       release:
         description: "Publish a release after mpv build"
@@ -50,7 +47,7 @@ jobs:
     name: Build LLVM
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/archlinux/archlinux:base-devel
+      image: cachyos/cachyos-v3:latest
     steps:
       - name: suffix
         id: suffix
@@ -59,24 +56,31 @@ jobs:
           echo "cache_suffix=$cache_suffix" >> "$GITHUB_OUTPUT"
       - name: Install Dependencies
         run: |
-          sudo pacman-key --init
-          sudo pacman-key --populate archlinux
-          sudo pacman -Syu --noconfirm
-          sudo pacman -S --noconfirm --needed git ninja cmake meson wget mimalloc go 7zip unzip
-          sudo pacman -U --noconfirm https://archive.archlinux.org/packages/m/meson/meson-1.9.2-1-any.pkg.tar.zst
+          sudo pacman -Syu --noconfirm || true
+          sudo pacman -Syu --noconfirm || true
+          sudo pacman -Syu --noconfirm || true
+          sudo pacman -S --noconfirm --needed base-devel git ninja cmake meson wget mimalloc go ccache bin-cpuflags-x86 || true
+          sudo pacman -S --noconfirm --needed base-devel git ninja cmake meson wget mimalloc go ccache bin-cpuflags-x86 || true
+          sudo pacman -S --noconfirm --needed base-devel git ninja cmake meson wget mimalloc go ccache bin-cpuflags-x86 || true
+          mkdir -p /home/opt/7zip || true
+          wget -qO - https://www.7-zip.org/a/7z2501-linux-x64.tar.xz | tar -xJf - -C /home/opt/7zip 7zzs || true
+          wget -qO - https://www.7-zip.org/a/7z2501-linux-x64.tar.xz | tar -xJf - -C /home/opt/7zip 7zzs || true
+          wget -qO - https://www.7-zip.org/a/7z2501-linux-x64.tar.xz | tar -xJf - -C /home/opt/7zip 7zzs || true
+          sudo ln -s /home/opt/7zip/7zzs /usr/bin/7z || true
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --global pull.rebase true
           git config --global rebase.autoStash true
           git config --global fetch.prune true
           sudo GOBIN=/usr/bin go install go.chromium.org/luci/cipd/client/cmd/...@latest
-          sudo cipd install fuchsia/third_party/clang/linux-amd64 latest -root /usr/local/fuchsia-clang
+          sudo cipd install fuchsia/third_party/clang/linux-amd64 nightly -root /usr/local/fuchsia-clang
           echo "PATH=/usr/local/fuchsia-clang/bin:$PATH" >> $GITHUB_ENV
+          lscpu
       - uses: actions/checkout@v6
       - name: Checkout toolchain
         uses: actions/checkout@v6
         with:
-          repository: shinchiro/mpv-winbuild-cmake
+          repository: Andarwinux/mpv-winbuild-cmake
           path: mpv-winbuild-cmake
           fetch-depth: 0
 
@@ -85,8 +89,8 @@ jobs:
         with:
           bit: "64-v3"
           compiler: "clang"
-          command: "ninja -C $buildroot/build$bit llvm"
-          extra_option: "${{ inputs.pgo && '-DLLVM_ENABLE_PGO=GEN -DLLVM_PROFILE_DATA_DIR=$PWD/profiles/'}}"
+          command: "ninja -C $buildroot/build$bit toolchains-download || true ; ninja -C $buildroot/build$bit toolchains-download && ninja -C $buildroot/build$bit llvm-host-libcxx && ninja -C $buildroot/build$bit llvm && ninja -C $buildroot/build$bit toolchains-fullclean"
+          extra_option: "${{ inputs.pgo && '-DCUSTOM_LIBCXX=ON -DCUSTOM_COMPILER_RT=OFF -DLLVM_ENABLE_PGO=GEN -DLLVM_ENABLE_LTO=Thin -DLLVM_PROFILE_DATA_DIR=$PWD/profiles/ -DTOOLCHAIN_FLAGS=-mno-sse4a'}}"
 
       - name: Training LLVM
         uses: ./action/build_toolchain
@@ -94,8 +98,8 @@ jobs:
         with:
           bit: "64-v3"
           compiler: "clang"
-          command: "ninja -C $buildroot/build$bit rebuild_cache && cmake --build $buildroot/build$bit --target llvm-download && ninja -C $buildroot/build$bit llvm-clang"
-          extra_option: "-DLLVM_ENABLE_PGO=GEN -DLLVM_PROFILE_DATA_DIR=$buildroot/profiles/"
+          command: "ninja -C $buildroot/build$bit rebuild_cache && ninja -C $buildroot/build$bit toolchains-download && ninja -C $buildroot/build$bit llvm-clang && ninja -C $buildroot/build$bit curl harfbuzz aria2"
+          extra_option: "-DCUSTOM_LIBCXX=ON -DCUSTOM_COMPILER_RT=OFF -DLLVM_ENABLE_PGO=GEN -DLLVM_ENABLE_LTO=Thin -DENABLE_CCACHE=ON -DLLVM_PROFILE_DATA_DIR=$buildroot/profiles/ -DTOOLCHAIN_FLAGS=-mno-sse4a"
 
       - name: Merging profdata
         if: ${{ inputs.pgo }}
@@ -112,8 +116,17 @@ jobs:
         with:
           bit: "64-v3"
           compiler: "clang"
-          command: "ninja -C $buildroot/build$bit llvm && rm -rf clang_root/llvm-thinlto || true"
-          extra_option: "-DLLVM_ENABLE_PGO=USE -DLLVM_ENABLE_LTO=Thin -DLLVM_PROFDATA_FILE=$buildroot/llvm.profdata"
+          command: "ninja -C $buildroot/build$bit toolchains-fullclean && ninja -C $buildroot/build$bit llvm-host-compiler-rt-builtin && ninja -C $buildroot/build$bit llvm-host-libcxx && ninja -C $buildroot/build$bit llvm && ninja -C $buildroot/build$bit glslc-host"
+          extra_option: "-DCUSTOM_LIBCXX=ON -DCUSTOM_COMPILER_RT=ON -DLLVM_ENABLE_PGO=USE -DLLVM_ENABLE_LTO=Thin -DLLVM_PROFDATA_FILE=$buildroot/llvm.profdata -DTOOLCHAIN_FLAGS=-mno-sse4a"
+
+      - name: Test
+        run: |
+          file mpv-winbuild-cmake/clang_root/llvmbin/llvm
+          ldd mpv-winbuild-cmake/clang_root/llvmbin/llvm
+          ls -alh mpv-winbuild-cmake/clang_root/llvmbin/llvm
+          bin-cpuflags-x86 -d mpv-winbuild-cmake/clang_root/llvmbin/llvm
+          llvm-readobj --headers --notes mpv-winbuild-cmake/clang_root/llvmbin/llvm
+          ./mpv-winbuild-cmake/clang_root/llvmbin/llvm clang -v
 
       - name: Save llvm cache
         uses: actions/cache/save@v5.0.1
@@ -133,6 +146,16 @@ jobs:
         with:
           name: llvm_logs
           path: logs.7z
+      - name: "release llvm"
+        uses: ncipollo/release-action@v1
+        with:
+          prerelease: false
+          artifacts: mpv-winbuild-cmake/clang_root/llvmbin/llvm
+          replacesArtifacts: true
+          tag: llvm
+          name: llvm
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
 
   trigger:
