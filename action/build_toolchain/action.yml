@@ -42,13 +42,10 @@ runs:
         buildroot=$(pwd)
         srcdir=$(pwd)/src_packages
 
-        if [ $bit == "32" ]; then
-            arch="i686"
-        elif [ $bit == "64" ]; then
+        if [ $bit == "64-v3" ]; then
             arch="x86_64"
-        elif [ $bit == "64-v3" ]; then
-            arch="x86_64"
-            gcc_arch=-DGCC_ARCH=x86-64-v3
+            gcc_arch=-DMARCH=skylake
+            arch_option=(-DMARCH_NAME=-v3)
             x86_64_level=-v3
         elif [ $bit == "aarch64" ]; then
             arch="aarch64"
@@ -56,8 +53,10 @@ runs:
         set -x
         if [ "$compiler" == "clang" ]; then
           clang_option="-DCMAKE_INSTALL_PREFIX=$clang_root -DMINGW_INSTALL_PREFIX=$buildroot/build$bit/install/$arch-w64-mingw32"
+          wget https://github.com/Andarwinux/mpv-winbuild/releases/download/pgo/pgo.profdata
+          pgo_option=(-DCLANG_PACKAGES_PGO=USE -DCLANG_PACKAGES_PROFDATA_FILE="./pgo.profdata")
         fi
-        cmake -Wno-dev --fresh -DTARGET_ARCH=$arch-w64-mingw32 $gcc_arch -DCOMPILER_TOOLCHAIN=$compiler $clang_option ${{ inputs.extra_option }} -DSINGLE_SOURCE_LOCATION=$srcdir -DRUSTUP_LOCATION=$buildroot/install_rustup -G Ninja -H$gitdir -B$buildroot/build$bit
+        cmake --fresh -DTARGET_ARCH=$arch-w64-mingw32 $gcc_arch -DCOMPILER_TOOLCHAIN=$compiler $clang_option "${arch_option[@]}" "${pgo_option[@]}" ${{ inputs.extra_option }} -DSINGLE_SOURCE_LOCATION=$srcdir -DTOOLCHAIN_FLAGS=-mno-sse4a -G Ninja -H$gitdir -B$buildroot/build$bit
         set +x
         stdbuf -oL bash -c "${{ inputs.command }}" | 
           while IFS= read -r line
