@@ -69,7 +69,7 @@ jobs:
           git config --global rebase.autoStash true
           git config --global fetch.prune true
           sudo GOBIN=/usr/bin go install go.chromium.org/luci/cipd/client/cmd/...@latest
-          sudo cipd install fuchsia/third_party/clang/linux-amd64 latest -root /usr/local/fuchsia-clang
+          sudo cipd install fuchsia/third_party/clang/linux-amd64 dMx0GlqcJFD538RTGV1jMPpIXNEqveq-z8DJq1xh57QC -root /usr/local/fuchsia-clang
           echo "PATH=/usr/local/fuchsia-clang/bin:$PATH" >> $GITHUB_ENV
           lscpu
       - uses: actions/checkout@v5
