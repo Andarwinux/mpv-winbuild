@@ -107,7 +107,7 @@ jobs:
           git config --global rebase.autoStash true
           git config --global fetch.prune true
           sudo GOBIN=/usr/bin go install go.chromium.org/luci/cipd/client/cmd/...@latest
-          sudo cipd install fuchsia/third_party/clang/linux-amd64 latest -root /usr/local/fuchsia-clang
+          sudo cipd install fuchsia/third_party/clang/linux-amd64 VzQfj9bxPjT9p3CXbkMz79cKj0NeEmZ9X_OfS1h3-mwC -root /usr/local/fuchsia-clang
           echo "PATH=/usr/local/fuchsia-clang/bin:$PATH" >> $GITHUB_ENV
           echo "SOURCE_DATE_EPOCH=$(date -ud "" +%s)" >> $GITHUB_ENV
           lscpu
