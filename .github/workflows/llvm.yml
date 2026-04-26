@@ -7,7 +7,7 @@ on:
       pgo:
         description: "Build llvm with PGO"
         required: false
-        default: true
+        default: false
         type: boolean   
       no_save_cache:
         description: "Don't save caches after success build"
@@ -86,11 +86,11 @@ jobs:
           bit: "64-v3"
           compiler: "clang"
           command: "ninja -C $buildroot/build$bit toolchains-download || true ; ninja -C $buildroot/build$bit toolchains-download && ninja -C $buildroot/build$bit llvm-host-libcxx && ninja -C $buildroot/build$bit llvm && ninja -C $buildroot/build$bit toolchains-fullclean"
-          extra_option: "${{ inputs.pgo && '-DCUSTOM_LIBCXX=ON -DCUSTOM_COMPILER_RT=OFF -DLLVM_ENABLE_PGO=GEN -DLLVM_ENABLE_LTO=Thin -DLLVM_PROFILE_DATA_DIR=$PWD/profiles/ -DTOOLCHAIN_FLAGS=-mno-sse4a'}}"
+          extra_option: "-DCUSTOM_LIBCXX=ON -DCUSTOM_COMPILER_RT=OFF -DLLVM_ENABLE_LTO=Thin -DTOOLCHAIN_FLAGS=-mno-sse4a"
 
       - name: Training LLVM
         uses: ./action/build_toolchain
-        if: ${{ inputs.pgo }}
+        if: ${{ false }}
         with:
           bit: "64-v3"
           compiler: "clang"
@@ -98,7 +98,7 @@ jobs:
           extra_option: "-DCUSTOM_LIBCXX=ON -DCUSTOM_COMPILER_RT=OFF -DLLVM_ENABLE_PGO=GEN -DLLVM_ENABLE_LTO=Thin -DENABLE_CCACHE=ON -DLLVM_PROFILE_DATA_DIR=$buildroot/profiles/ -DTOOLCHAIN_FLAGS=-mno-sse4a"
 
       - name: Merging profdata
-        if: ${{ inputs.pgo }}
+        if: ${{ false }}
         run: |
           shopt -s globstar
           cd mpv-winbuild-cmake/profiles/
@@ -108,7 +108,7 @@ jobs:
 
       - name: Build LLVM with PGO
         uses: ./action/build_toolchain
-        if: ${{ inputs.pgo }}
+        if: ${{ false }}
         with:
           bit: "64-v3"
           compiler: "clang"
