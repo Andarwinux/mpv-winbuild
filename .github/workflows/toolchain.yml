@@ -146,7 +146,7 @@ jobs:
         with:
           bit: "${{ matrix.bit }}"
           compiler: "clang"
-          command: "ninja -C $buildroot/build$bit rebuild_cache && ninja -C $buildroot/build$bit toolchains-download || true ; ninja -C $buildroot/build$bit toolchains-download && ninja -C $buildroot/build$bit llvm-clang"
+          command: "ninja -C $buildroot/build$bit rebuild_cache && ninja -C $buildroot/build$bit toolchains-download harfbuzz-download || true ; ninja -C $buildroot/build$bit toolchains-download harfbuzz-download && ninja -C $buildroot/build$bit llvm-clang && ninja -C $buildroot/build$bit llvm-bolt && ninja -C $buildroot/build$bit harfbuzz-removeprefix"
           extra_option: "-DLLVM_ENABLE_LTO=Thin -DCUSTOM_LIBCXX=ON -DCUSTOM_COMPILER_RT=OFF"
 
       - name: Save Toolchain Cache
